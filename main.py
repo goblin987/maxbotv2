@@ -687,29 +687,23 @@ def nowpayments_webhook():
     return Response(status=200)
 
 def call_handler_synchronously(update: Update):
-    """Call handlers synchronously using isolated event loop with fresh bot context"""
+    """Call handlers synchronously using asyncio.run for proper cleanup"""
     global telegram_app
     
     logger.info(f"SYNC_HANDLER: Processing update {update.update_id} synchronously")
     
     try:
-        # Create isolated event loop for this request
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        # Create a context object manually
+        from telegram.ext import ContextTypes
         
-        logger.info(f"SYNC_HANDLER: Created isolated event loop for request")
+        logger.info(f"SYNC_HANDLER: Creating context for bot processing")
+        context = ContextTypes.DEFAULT_TYPE(
+            application=telegram_app,
+            chat_id=update.effective_chat.id,
+            user_id=update.effective_user.id
+        )
         
         async def run_handler():
-            # Create a context object manually
-            from telegram.ext import ContextTypes
-            
-            logger.info(f"SYNC_HANDLER: Creating context for bot processing")
-            context = ContextTypes.DEFAULT_TYPE(
-                application=telegram_app,
-                chat_id=update.effective_chat.id,
-                user_id=update.effective_user.id
-            )
-            
             # Handle different types of updates
             if update.message and update.message.text:
                 text = update.message.text.strip()
@@ -745,34 +739,12 @@ def call_handler_synchronously(update: Update):
                 logger.info(f"SYNC_HANDLER: Calling handle_message for other content from user {update.effective_user.id}")
                 return await handle_message(update, context)
         
-        try:
-            # Run the handler
-            result = loop.run_until_complete(run_handler())
-            logger.info(f"SYNC_HANDLER: Handler completed successfully")
-            return True
-            
-        except Exception as handler_error:
-            logger.error(f"SYNC_HANDLER: Error running handler: {handler_error}", exc_info=True)
-            return False
-            
-        finally:
-            # Clean shutdown of the loop
-            try:
-                # Cancel all pending tasks
-                pending = asyncio.all_tasks(loop)
-                for task in pending:
-                    task.cancel()
-                
-                # Wait for cancellation to complete
-                if pending:
-                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-                    
-                # Close the loop
-                loop.close()
-                logger.debug(f"SYNC_HANDLER: Event loop closed cleanly")
-                
-            except Exception as cleanup_error:
-                logger.debug(f"SYNC_HANDLER: Cleanup error (expected): {cleanup_error}")
+        # Use asyncio.run for proper cleanup
+        logger.info(f"SYNC_HANDLER: Using asyncio.run for proper cleanup")
+        result = asyncio.run(run_handler())
+        
+        logger.info(f"SYNC_HANDLER: Handler completed successfully")
+        return True
             
     except Exception as e:
         logger.error(f"SYNC_HANDLER: Error in synchronous handler: {e}", exc_info=True)
