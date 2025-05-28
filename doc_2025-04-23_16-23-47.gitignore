@@ -1,0 +1,27 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment files (just in case)
+.env*
+
+# Database file (Lives on Render Disk)
+shop.db
+*.db
+*.sqlite
+*.sqlite3
+*db-journal* # SQLite temporary files
+
+# Sensitive config (Handled by Environment Variables)
+config.json
+
+# Media files folder (Lives on Render Disk)
+media/
+
+# Bot media config (Lives on Render Disk)
+bot_media.json
+
+# Temporary files
+*.tmp
