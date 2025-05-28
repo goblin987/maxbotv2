@@ -686,26 +686,6 @@ def nowpayments_webhook():
          logger.info(f"Webhook received for payment {payment_id} with status: {status} (ignored).")
     return Response(status=200)
 
-async def process_update_with_debug(update: Update):
-    """Debug wrapper for processing updates"""
-    global telegram_app
-    try:
-        logger.info(f"PROCESS_DEBUG: Starting to process update {update.update_id if update else 'None'}")
-        
-        if update and update.message:
-            logger.info(f"PROCESS_DEBUG: Update {update.update_id} is a message: '{update.message.text}' from user {update.effective_user.id}")
-            
-        if not telegram_app:
-            logger.error(f"PROCESS_DEBUG: telegram_app is None!")
-            return
-            
-        logger.info(f"PROCESS_DEBUG: About to call telegram_app.process_update for update {update.update_id if update else 'None'}")
-        await telegram_app.process_update(update)
-        logger.info(f"PROCESS_DEBUG: Successfully completed processing update {update.update_id if update else 'None'}")
-        
-    except Exception as e:
-        logger.error(f"PROCESS_DEBUG: Error processing update {update.update_id if update else 'None'}: {e}", exc_info=True)
-
 @flask_app.route(f"/telegram/{TOKEN}", methods=['POST'])
 def telegram_webhook():
     global telegram_app, main_loop
@@ -725,8 +705,25 @@ def telegram_webhook():
         
         # Process the update asynchronously without waiting
         logger.info(f"DEBUG: Scheduling update {update.update_id if update else 'None'} for processing")
-        asyncio.run_coroutine_threadsafe(process_update_with_debug(update), main_loop)
-        logger.info(f"DEBUG: Update {update.update_id if update else 'None'} scheduled successfully")
+        logger.info(f"DEBUG: main_loop is running: {main_loop.is_running()}")
+        logger.info(f"DEBUG: telegram_app initialized: {telegram_app is not None}")
+        
+        # Schedule the update processing directly
+        try:
+            future = asyncio.run_coroutine_threadsafe(telegram_app.process_update(update), main_loop)
+            logger.info(f"DEBUG: Update {update.update_id if update else 'None'} scheduled successfully with future: {future}")
+            
+            # Try to get the result with a very short timeout to see if it completes quickly
+            try:
+                result = future.result(timeout=0.1)
+                logger.info(f"DEBUG: Update processing completed immediately for update {update.update_id if update else 'None'}")
+            except asyncio.TimeoutError:
+                logger.info(f"DEBUG: Update processing is running asynchronously for update {update.update_id if update else 'None'}")
+            except Exception as result_e:
+                logger.error(f"DEBUG: Error getting result: {result_e}")
+                
+        except Exception as schedule_e:
+            logger.error(f"DEBUG: Failed to schedule update processing: {schedule_e}", exc_info=True)
         
         logger.info(f"Successfully processed update: {update.update_id if update else 'None'}")
         return Response(status=200)
@@ -795,8 +792,11 @@ def main() -> None:
 
     logger.info("Registering handlers...")
     # Use simple handler first to test basic functionality
-    application.add_handler(CommandHandler("start", simple_start_handler)) 
-    logger.info("Registered start command handler")
+    start_handler = CommandHandler("start", simple_start_handler)
+    application.add_handler(start_handler) 
+    logger.info(f"Registered start command handler: {start_handler}")
+    logger.info(f"Handler callback: {start_handler.callback}")
+    
     application.add_handler(CommandHandler("admin", admin_product_management.handle_admin_menu)) 
     application.add_handler(CommandHandler("done_bulk", admin_product_management.handle_done_bulk_command))
     application.add_handler(CallbackQueryHandler(handle_callback_query))
@@ -805,6 +805,14 @@ def main() -> None:
         handle_message
     ))
     application.add_error_handler(error_handler)
+    
+    # Debug: Check all registered handlers
+    logger.info(f"All registered handlers: {application.handlers}")
+    for group_num, handlers in application.handlers.items():
+        logger.info(f"Handler group {group_num}: {len(handlers)} handlers")
+        for i, handler in enumerate(handlers):
+            logger.info(f"  Handler {i}: {type(handler).__name__} - {handler}")
+    
     logger.info("All handlers registered successfully")
     telegram_app = application
     main_loop = asyncio.get_event_loop()
