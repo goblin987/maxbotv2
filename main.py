@@ -703,15 +703,10 @@ def telegram_webhook():
             if update.message.text and update.message.text.startswith('/'):
                 logger.info(f"DEBUG: Command detected: '{update.message.text}'")
         
-        # Process the update
-        future = asyncio.run_coroutine_threadsafe(telegram_app.process_update(update), main_loop)
-        try:
-            result = future.result(timeout=10)  # Add timeout to see if processing hangs
-            logger.info(f"DEBUG: Update processing completed for update {update.update_id if update else 'None'}")
-        except asyncio.TimeoutError:
-            logger.error(f"DEBUG: Update processing timed out for update {update.update_id if update else 'None'}")
-        except Exception as process_error:
-            logger.error(f"DEBUG: Error during update processing: {process_error}", exc_info=True)
+        # Process the update asynchronously without waiting
+        logger.info(f"DEBUG: Scheduling update {update.update_id if update else 'None'} for processing")
+        asyncio.run_coroutine_threadsafe(telegram_app.process_update(update), main_loop)
+        logger.info(f"DEBUG: Update {update.update_id if update else 'None'} scheduled successfully")
         
         logger.info(f"Successfully processed update: {update.update_id if update else 'None'}")
         return Response(status=200)
@@ -724,12 +719,24 @@ def telegram_webhook():
 
 async def simple_start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Simple test start handler"""
-    logger.info(f"SIMPLE START: Command received from user {update.effective_user.id}")
+    user_id = update.effective_user.id
+    logger.info(f"SIMPLE START: Command received from user {user_id}")
+    logger.info(f"SIMPLE START: Update object: {update}")
+    logger.info(f"SIMPLE START: Context object: {context}")
+    
     try:
-        await update.message.reply_text("Bot is working! This is a test response.")
-        logger.info(f"SIMPLE START: Successfully sent test message to user {update.effective_user.id}")
+        logger.info(f"SIMPLE START: Attempting to send message to user {user_id}")
+        message = await update.message.reply_text("Bot is working! This is a test response.")
+        logger.info(f"SIMPLE START: Successfully sent test message to user {user_id}, message_id: {message.message_id}")
     except Exception as e:
-        logger.error(f"SIMPLE START: Error sending test message: {e}", exc_info=True)
+        logger.error(f"SIMPLE START: Error sending test message to user {user_id}: {e}", exc_info=True)
+        # Try an alternative sending method
+        try:
+            logger.info(f"SIMPLE START: Trying alternative send method for user {user_id}")
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="Bot is working! (Alternative method)")
+            logger.info(f"SIMPLE START: Alternative method successful for user {user_id}")
+        except Exception as e2:
+            logger.error(f"SIMPLE START: Alternative method also failed for user {user_id}: {e2}", exc_info=True)
 
 async def debug_start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Debug wrapper for start handler"""
