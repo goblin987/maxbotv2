@@ -690,6 +690,8 @@ async def debug_process_update(update: Update):
     """Custom update processor with detailed debugging"""
     global telegram_app
     
+    logger.info(f"DEBUG_PROCESS_UPDATE: FUNCTION CALLED for update {update.update_id if update else 'None'}")
+    
     try:
         logger.info(f"CUSTOM_PROCESS: Starting to process update {update.update_id}")
         
@@ -703,8 +705,8 @@ async def debug_process_update(update: Update):
         if update.message and update.message.text and update.message.text.startswith('/start'):
             logger.info(f"CUSTOM_PROCESS: This should match our /start CommandHandler!")
             
-        # Process the update through the normal pipeline
-        logger.info(f"CUSTOM_PROCESS: About to call telegram_app.process_update")
+        # Process the update through the normal pipeline using the patched method
+        logger.info(f"CUSTOM_PROCESS: About to call telegram_app.process_update (which should be our wrapper)")
         await telegram_app.process_update(update)
         logger.info(f"CUSTOM_PROCESS: Completed telegram_app.process_update for {update.update_id}")
         
@@ -735,6 +737,7 @@ def telegram_webhook():
         
         # Schedule our custom update processing
         try:
+            logger.info(f"DEBUG: About to schedule debug_process_update for update {update.update_id if update else 'None'}")
             future = asyncio.run_coroutine_threadsafe(debug_process_update(update), main_loop)
             logger.info(f"DEBUG: Update {update.update_id if update else 'None'} scheduled successfully with future: {future}")
             
@@ -745,7 +748,7 @@ def telegram_webhook():
             except asyncio.TimeoutError:
                 logger.info(f"DEBUG: Update processing is running asynchronously for update {update.update_id if update else 'None'}")
             except Exception as result_e:
-                logger.error(f"DEBUG: Error getting result: {result_e}")
+                logger.error(f"DEBUG: Error getting result: {result_e}", exc_info=True)
                 
         except Exception as schedule_e:
             logger.error(f"DEBUG: Failed to schedule update processing: {schedule_e}", exc_info=True)
@@ -806,6 +809,7 @@ async def debug_start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def process_update_with_debug(self, update: Update, check_result: object = None) -> None:
     """Wrapper for Application.process_update with detailed debugging"""
+    logger.info(f"PROCESS_UPDATE_WITH_DEBUG: WRAPPER FUNCTION CALLED for update {update.update_id if update else 'None'}")
     logger.info(f"WRAPPER: process_update_with_debug called for update {update.update_id}")
     
     # Check what handlers we have registered
