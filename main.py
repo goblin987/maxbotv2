@@ -686,6 +686,26 @@ def nowpayments_webhook():
          logger.info(f"Webhook received for payment {payment_id} with status: {status} (ignored).")
     return Response(status=200)
 
+async def process_update_with_debug(update: Update):
+    """Debug wrapper for processing updates"""
+    global telegram_app
+    try:
+        logger.info(f"PROCESS_DEBUG: Starting to process update {update.update_id if update else 'None'}")
+        
+        if update and update.message:
+            logger.info(f"PROCESS_DEBUG: Update {update.update_id} is a message: '{update.message.text}' from user {update.effective_user.id}")
+            
+        if not telegram_app:
+            logger.error(f"PROCESS_DEBUG: telegram_app is None!")
+            return
+            
+        logger.info(f"PROCESS_DEBUG: About to call telegram_app.process_update for update {update.update_id if update else 'None'}")
+        await telegram_app.process_update(update)
+        logger.info(f"PROCESS_DEBUG: Successfully completed processing update {update.update_id if update else 'None'}")
+        
+    except Exception as e:
+        logger.error(f"PROCESS_DEBUG: Error processing update {update.update_id if update else 'None'}: {e}", exc_info=True)
+
 @flask_app.route(f"/telegram/{TOKEN}", methods=['POST'])
 def telegram_webhook():
     global telegram_app, main_loop
@@ -705,7 +725,7 @@ def telegram_webhook():
         
         # Process the update asynchronously without waiting
         logger.info(f"DEBUG: Scheduling update {update.update_id if update else 'None'} for processing")
-        asyncio.run_coroutine_threadsafe(telegram_app.process_update(update), main_loop)
+        asyncio.run_coroutine_threadsafe(process_update_with_debug(update), main_loop)
         logger.info(f"DEBUG: Update {update.update_id if update else 'None'} scheduled successfully")
         
         logger.info(f"Successfully processed update: {update.update_id if update else 'None'}")
@@ -720,12 +740,16 @@ def telegram_webhook():
 async def simple_start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Simple test start handler"""
     user_id = update.effective_user.id
-    logger.info(f"SIMPLE START: Command received from user {user_id}")
+    logger.info(f"SIMPLE START: ====== HANDLER CALLED ====== Command received from user {user_id}")
     logger.info(f"SIMPLE START: Update object: {update}")
     logger.info(f"SIMPLE START: Context object: {context}")
+    logger.info(f"SIMPLE START: Bot instance: {context.bot}")
     
     try:
         logger.info(f"SIMPLE START: Attempting to send message to user {user_id}")
+        logger.info(f"SIMPLE START: Chat ID: {update.effective_chat.id}")
+        logger.info(f"SIMPLE START: Message object: {update.message}")
+        
         message = await update.message.reply_text("Bot is working! This is a test response.")
         logger.info(f"SIMPLE START: Successfully sent test message to user {user_id}, message_id: {message.message_id}")
     except Exception as e:
@@ -737,6 +761,13 @@ async def simple_start_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             logger.info(f"SIMPLE START: Alternative method successful for user {user_id}")
         except Exception as e2:
             logger.error(f"SIMPLE START: Alternative method also failed for user {user_id}: {e2}", exc_info=True)
+            # Try the most basic method
+            try:
+                logger.info(f"SIMPLE START: Trying most basic send method for user {user_id}")
+                await context.bot.send_message(user_id, "Basic test message")
+                logger.info(f"SIMPLE START: Basic method successful for user {user_id}")
+            except Exception as e3:
+                logger.error(f"SIMPLE START: All methods failed for user {user_id}: {e3}", exc_info=True)
 
 async def debug_start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Debug wrapper for start handler"""
@@ -791,6 +822,8 @@ def main() -> None:
         main_loop = asyncio.get_running_loop()
         
         logger.info("Starting setup_webhooks_and_run...")
+        logger.info(f"DEBUG: Event loop set to: {main_loop}")
+        logger.info(f"DEBUG: telegram_app: {telegram_app}")
         
         # Schedule recurring jobs
         job_queue = telegram_app.job_queue
@@ -807,6 +840,7 @@ def main() -> None:
         
         logger.info(f"Webhook set to: {WEBHOOK_URL}/telegram/{TOKEN}")
         logger.info("Telegram bot initialized and webhook configured")
+        logger.info(f"DEBUG: Bot info: {await telegram_app.bot.get_me()}")
         
         # Flask server (blocking call)
         flask_app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False, use_reloader=False)
