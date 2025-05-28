@@ -245,7 +245,7 @@ def callback_query_router(func):
                 "adm_edit_welcome_desc": admin_features.handle_adm_edit_welcome_desc,
                 "adm_reset_default_confirm": admin_features.handle_reset_default_welcome,
                 "confirm_save_welcome": admin_features.handle_confirm_save_welcome,
-                "adm_clear_reservations_confirm": admin_features.handle_adm_clear_reservations_confirm, # Moved to admin_features
+                "adm_clear_reservations_confirm": admin_product_management.handle_adm_clear_reservations_confirm,
 
                 # Viewer Admin Handlers (from viewer_admin.py)
                 "viewer_admin_menu": handle_viewer_admin_menu,
