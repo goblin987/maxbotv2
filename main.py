@@ -687,8 +687,8 @@ def nowpayments_webhook():
     return Response(status=200)
 
 def call_handler_synchronously(update: Update):
-    """Call handlers synchronously without async complications"""
-    global telegram_app
+    """Call handlers synchronously using the main event loop"""
+    global telegram_app, main_loop
     
     logger.info(f"SYNC_HANDLER: Processing update {update.update_id} synchronously")
     
@@ -703,14 +703,9 @@ def call_handler_synchronously(update: Update):
             user_id=update.effective_user.id
         )
         
-        # Create a new event loop for this thread
-        import asyncio
-        try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
-            logger.info(f"SYNC_HANDLER: Created new event loop, processing update")
-            
+        logger.info(f"SYNC_HANDLER: Using main event loop for processing")
+        
+        async def run_handler():
             # Handle different types of updates
             if update.message and update.message.text:
                 text = update.message.text.strip()
@@ -718,41 +713,44 @@ def call_handler_synchronously(update: Update):
                 # Handle commands
                 if text.startswith('/start'):
                     logger.info(f"SYNC_HANDLER: Calling user.start for user {update.effective_user.id}")
-                    result = loop.run_until_complete(user.start(update, context))
+                    return await user.start(update, context)
                 elif text.startswith('/admin'):
                     if update.effective_user.id in [ADMIN_ID] + SECONDARY_ADMIN_IDS:
                         logger.info(f"SYNC_HANDLER: Calling admin menu for user {update.effective_user.id}")
-                        result = loop.run_until_complete(admin_product_management.handle_admin_menu(update, context))
+                        return await admin_product_management.handle_admin_menu(update, context)
                     else:
-                        result = loop.run_until_complete(update.message.reply_text("Access denied."))
+                        return await update.message.reply_text("Access denied.")
                 elif text.startswith('/done_bulk'):
                     if update.effective_user.id in [ADMIN_ID] + SECONDARY_ADMIN_IDS:
                         logger.info(f"SYNC_HANDLER: Calling done_bulk for user {update.effective_user.id}")
-                        result = loop.run_until_complete(admin_product_management.done_bulk_adding(update, context))
+                        return await admin_product_management.done_bulk_adding(update, context)
                     else:
-                        result = loop.run_until_complete(update.message.reply_text("Access denied."))
+                        return await update.message.reply_text("Access denied.")
                 else:
                     # Handle regular messages (states, etc.)
                     logger.info(f"SYNC_HANDLER: Calling handle_message for user {update.effective_user.id}")
-                    result = loop.run_until_complete(handle_message(update, context))
+                    return await handle_message(update, context)
                     
             elif update.callback_query:
                 # Handle callback queries
                 logger.info(f"SYNC_HANDLER: Calling handle_callback_query for user {update.effective_user.id}")
-                result = loop.run_until_complete(handle_callback_query(update, context))
+                return await handle_callback_query(update, context)
                 
             else:
                 # Handle other types (photos, videos, etc.)
                 logger.info(f"SYNC_HANDLER: Calling handle_message for other content from user {update.effective_user.id}")
-                result = loop.run_until_complete(handle_message(update, context))
+                return await handle_message(update, context)
+        
+        # Use the main event loop to run the handler
+        if main_loop and main_loop.is_running():
+            # Schedule the coroutine on the main event loop and wait for it
+            future = asyncio.run_coroutine_threadsafe(run_handler(), main_loop)
+            result = future.result(timeout=30)  # 30 second timeout
             
             logger.info(f"SYNC_HANDLER: Handler completed successfully")
-            loop.close()
             return True
-            
-        except Exception as loop_e:
-            logger.error(f"SYNC_HANDLER: Error in event loop execution: {loop_e}", exc_info=True)
-            loop.close()
+        else:
+            logger.error(f"SYNC_HANDLER: Main event loop not available or not running")
             return False
             
     except Exception as e:
