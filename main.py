@@ -686,37 +686,50 @@ def nowpayments_webhook():
          logger.info(f"Webhook received for payment {payment_id} with status: {status} (ignored).")
     return Response(status=200)
 
-async def debug_process_update(update: Update):
-    """Custom update processor with detailed debugging"""
+def call_handler_synchronously(update: Update):
+    """Call handlers synchronously without async complications"""
     global telegram_app
     
-    logger.info(f"DEBUG_PROCESS_UPDATE: FUNCTION CALLED for update {update.update_id if update else 'None'}")
+    logger.info(f"SYNC_HANDLER: Processing update {update.update_id} synchronously")
     
     try:
-        logger.info(f"CUSTOM_PROCESS: Starting to process update {update.update_id}")
-        
-        if update.message:
-            logger.info(f"CUSTOM_PROCESS: Update {update.update_id} has message: '{update.message.text}'")
-            logger.info(f"CUSTOM_PROCESS: Message chat: {update.message.chat}")
-            logger.info(f"CUSTOM_PROCESS: Message from: {update.message.from_user}")
-            logger.info(f"CUSTOM_PROCESS: Message entities: {update.message.entities}")
-            
-        # Check if this should match our CommandHandler
+        # Check if this is a /start command
         if update.message and update.message.text and update.message.text.startswith('/start'):
-            logger.info(f"CUSTOM_PROCESS: This should match our /start CommandHandler!")
+            logger.info(f"SYNC_HANDLER: Detected /start command from user {update.effective_user.id}")
             
-        # Process the update through the normal pipeline using the patched method
-        logger.info(f"CUSTOM_PROCESS: About to call telegram_app.process_update (which should be our wrapper)")
-        await telegram_app.process_update(update)
-        logger.info(f"CUSTOM_PROCESS: Completed telegram_app.process_update for {update.update_id}")
-        
+            # Create a context object manually
+            from telegram.ext import ContextTypes
+            
+            logger.info(f"SYNC_HANDLER: Creating context for bot processing")
+            context = ContextTypes.DEFAULT_TYPE(
+                application=telegram_app,
+                chat_id=update.effective_chat.id,
+                user_id=update.effective_user.id
+            )
+            
+            logger.info(f"SYNC_HANDLER: About to call simple_start_handler directly")
+            # Create a new event loop for this thread
+            import asyncio
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                
+                logger.info(f"SYNC_HANDLER: Created new event loop, calling handler")
+                result = loop.run_until_complete(simple_start_handler(update, context))
+                logger.info(f"SYNC_HANDLER: Handler completed successfully")
+                
+                loop.close()
+                return True
+            except Exception as loop_e:
+                logger.error(f"SYNC_HANDLER: Error in event loop execution: {loop_e}", exc_info=True)
+                return False
+        else:
+            logger.info(f"SYNC_HANDLER: Not a /start command, skipping for now")
+            return True
+            
     except Exception as e:
-        logger.error(f"CUSTOM_PROCESS: Error in custom process_update: {e}", exc_info=True)
-
-async def simple_test_async():
-    """Simple test to see if async execution works"""
-    logger.info("SIMPLE_TEST_ASYNC: This function was called successfully!")
-    return "test_success"
+        logger.error(f"SYNC_HANDLER: Error in synchronous handler: {e}", exc_info=True)
+        return False
 
 @flask_app.route(f"/telegram/{TOKEN}", methods=['POST'])
 def telegram_webhook():
@@ -735,45 +748,17 @@ def telegram_webhook():
             if update.message.text and update.message.text.startswith('/'):
                 logger.info(f"DEBUG: Command detected: '{update.message.text}'")
         
-        # FIRST: Test if we can run ANY async function
-        logger.info(f"TEST: About to test simple async execution")
+        # NEW APPROACH: Call handler synchronously
+        logger.info(f"SYNC_APPROACH: Attempting synchronous handler processing")
         try:
-            test_future = asyncio.run_coroutine_threadsafe(simple_test_async(), main_loop)
-            logger.info(f"TEST: Simple async scheduled successfully")
-            try:
-                result = test_future.result(timeout=1.0)
-                logger.info(f"TEST: Simple async completed with result: {result}")
-            except asyncio.TimeoutError:
-                logger.error(f"TEST: Simple async timed out!")
-            except Exception as test_e:
-                logger.error(f"TEST: Simple async failed: {test_e}", exc_info=True)
-        except Exception as schedule_test_e:
-            logger.error(f"TEST: Failed to schedule simple async: {schedule_test_e}", exc_info=True)
+            success = call_handler_synchronously(update)
+            if success:
+                logger.info(f"SYNC_APPROACH: Successfully processed update {update.update_id}")
+            else:
+                logger.error(f"SYNC_APPROACH: Failed to process update {update.update_id}")
+        except Exception as sync_e:
+            logger.error(f"SYNC_APPROACH: Exception in synchronous processing: {sync_e}", exc_info=True)
         
-        # Process the update asynchronously without waiting
-        logger.info(f"DEBUG: Scheduling update {update.update_id if update else 'None'} for processing")
-        logger.info(f"DEBUG: main_loop is running: {main_loop.is_running()}")
-        logger.info(f"DEBUG: telegram_app initialized: {telegram_app is not None}")
-        
-        # Schedule our custom update processing
-        try:
-            logger.info(f"DEBUG: About to schedule debug_process_update for update {update.update_id if update else 'None'}")
-            future = asyncio.run_coroutine_threadsafe(debug_process_update(update), main_loop)
-            logger.info(f"DEBUG: Update {update.update_id if update else 'None'} scheduled successfully with future: {future}")
-            
-            # Try to get the result with a very short timeout to see if it completes quickly
-            try:
-                result = future.result(timeout=0.1)
-                logger.info(f"DEBUG: Update processing completed immediately for update {update.update_id if update else 'None'}")
-            except asyncio.TimeoutError:
-                logger.info(f"DEBUG: Update processing is running asynchronously for update {update.update_id if update else 'None'}")
-            except Exception as result_e:
-                logger.error(f"DEBUG: Error getting result: {result_e}", exc_info=True)
-                
-        except Exception as schedule_e:
-            logger.error(f"DEBUG: Failed to schedule update processing: {schedule_e}", exc_info=True)
-        
-        logger.info(f"Successfully processed update: {update.update_id if update else 'None'}")
         return Response(status=200)
     except json.JSONDecodeError:
         logger.error("Telegram webhook received invalid JSON.")
