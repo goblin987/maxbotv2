@@ -693,58 +693,41 @@ def call_handler_synchronously(update: Update):
     logger.info(f"SYNC_HANDLER: Processing update {update.update_id} synchronously")
     
     try:
-        # Create a context object manually
-        from telegram.ext import ContextTypes
+        async def process_update_wrapper():
+            try:
+                logger.info(f"SYNC_HANDLER: Starting process_update for update {update.update_id}")
+                # Use the application's built-in update processing
+                await telegram_app.process_update(update)
+                logger.info(f"SYNC_HANDLER: process_update completed for update {update.update_id}")
+            except Exception as e:
+                logger.error(f"SYNC_HANDLER: Exception in process_update for update {update.update_id}: {e}", exc_info=True)
+                # Try to send error message to user
+                try:
+                    if update.effective_chat and telegram_app.bot:
+                        await send_message_with_retry(telegram_app.bot, update.effective_chat.id, "An error occurred processing your request. Please try again.")
+                except Exception as notify_e:
+                    logger.error(f"SYNC_HANDLER: Failed to notify user of error: {notify_e}")
         
-        logger.info(f"SYNC_HANDLER: Creating context for bot processing")
-        context = ContextTypes.DEFAULT_TYPE(
-            application=telegram_app,
-            chat_id=update.effective_chat.id,
-            user_id=update.effective_user.id
-        )
-        
-        async def run_handler():
-            # Handle different types of updates
-            if update.message and update.message.text:
-                text = update.message.text.strip()
-                
-                # Handle commands
-                if text.startswith('/start'):
-                    logger.info(f"SYNC_HANDLER: Calling user.start for user {update.effective_user.id}")
-                    return await user.start(update, context)
-                elif text.startswith('/admin'):
-                    if update.effective_user.id in [ADMIN_ID] + SECONDARY_ADMIN_IDS:
-                        logger.info(f"SYNC_HANDLER: Calling admin menu for user {update.effective_user.id}")
-                        return await admin_product_management.handle_admin_menu(update, context)
-                    else:
-                        return await update.message.reply_text("Access denied.")
-                elif text.startswith('/done_bulk'):
-                    if update.effective_user.id in [ADMIN_ID] + SECONDARY_ADMIN_IDS:
-                        logger.info(f"SYNC_HANDLER: Calling done_bulk for user {update.effective_user.id}")
-                        return await admin_product_management.done_bulk_adding(update, context)
-                    else:
-                        return await update.message.reply_text("Access denied.")
+        # Add callback to log completion/errors
+        def log_future_result(future):
+            try:
+                exc = future.exception()
+                if exc:
+                    logger.error(f"SYNC_HANDLER: Future completed with exception for update {update.update_id}: {exc}", exc_info=exc)
                 else:
-                    # Handle regular messages (states, etc.)
-                    logger.info(f"SYNC_HANDLER: Calling handle_message for user {update.effective_user.id}")
-                    return await handle_message(update, context)
-                    
-            elif update.callback_query:
-                # Handle callback queries
-                logger.info(f"SYNC_HANDLER: Calling handle_callback_query for user {update.effective_user.id}")
-                return await handle_callback_query(update, context)
-                
-            else:
-                # Handle other types (photos, videos, etc.)
-                logger.info(f"SYNC_HANDLER: Calling handle_message for other content from user {update.effective_user.id}")
-                return await handle_message(update, context)
+                    logger.info(f"SYNC_HANDLER: Future completed successfully for update {update.update_id}")
+            except Exception as e:
+                logger.error(f"SYNC_HANDLER: Error checking future result: {e}")
         
-        # Schedule the coroutine on the main event loop but don't wait for it
-        logger.info(f"SYNC_HANDLER: Scheduling handler on main event loop")
-        future = asyncio.run_coroutine_threadsafe(run_handler(), main_loop)
+        # Schedule the coroutine on the main event loop
+        logger.info(f"SYNC_HANDLER: Scheduling process_update on main event loop")
+        future = asyncio.run_coroutine_threadsafe(process_update_wrapper(), main_loop)
+        
+        # Add callback to log when the future completes
+        future.add_done_callback(log_future_result)
         
         # Don't wait for the result - just let it run in the background
-        logger.info(f"SYNC_HANDLER: Handler scheduled successfully, not waiting for result")
+        logger.info(f"SYNC_HANDLER: Update processing scheduled successfully")
         return True
             
     except Exception as e:
