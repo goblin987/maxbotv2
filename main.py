@@ -687,15 +687,14 @@ def nowpayments_webhook():
     return Response(status=200)
 
 def call_handler_synchronously(update: Update):
-    """Call handlers synchronously using thread pool executor"""
-    global telegram_app
+    """Call handlers using the main event loop without blocking"""
+    global telegram_app, main_loop
     
     logger.info(f"SYNC_HANDLER: Processing update {update.update_id} synchronously")
     
     try:
         # Create a context object manually
         from telegram.ext import ContextTypes
-        from concurrent.futures import ThreadPoolExecutor
         
         logger.info(f"SYNC_HANDLER: Creating context for bot processing")
         context = ContextTypes.DEFAULT_TYPE(
@@ -704,54 +703,48 @@ def call_handler_synchronously(update: Update):
             user_id=update.effective_user.id
         )
         
-        def run_handler_sync():
-            """Run the async handler in a synchronous context"""
-            async def run_handler():
-                # Handle different types of updates
-                if update.message and update.message.text:
-                    text = update.message.text.strip()
-                    
-                    # Handle commands
-                    if text.startswith('/start'):
-                        logger.info(f"SYNC_HANDLER: Calling user.start for user {update.effective_user.id}")
-                        return await user.start(update, context)
-                    elif text.startswith('/admin'):
-                        if update.effective_user.id in [ADMIN_ID] + SECONDARY_ADMIN_IDS:
-                            logger.info(f"SYNC_HANDLER: Calling admin menu for user {update.effective_user.id}")
-                            return await admin_product_management.handle_admin_menu(update, context)
-                        else:
-                            return await update.message.reply_text("Access denied.")
-                    elif text.startswith('/done_bulk'):
-                        if update.effective_user.id in [ADMIN_ID] + SECONDARY_ADMIN_IDS:
-                            logger.info(f"SYNC_HANDLER: Calling done_bulk for user {update.effective_user.id}")
-                            return await admin_product_management.done_bulk_adding(update, context)
-                        else:
-                            return await update.message.reply_text("Access denied.")
+        async def run_handler():
+            # Handle different types of updates
+            if update.message and update.message.text:
+                text = update.message.text.strip()
+                
+                # Handle commands
+                if text.startswith('/start'):
+                    logger.info(f"SYNC_HANDLER: Calling user.start for user {update.effective_user.id}")
+                    return await user.start(update, context)
+                elif text.startswith('/admin'):
+                    if update.effective_user.id in [ADMIN_ID] + SECONDARY_ADMIN_IDS:
+                        logger.info(f"SYNC_HANDLER: Calling admin menu for user {update.effective_user.id}")
+                        return await admin_product_management.handle_admin_menu(update, context)
                     else:
-                        # Handle regular messages (states, etc.)
-                        logger.info(f"SYNC_HANDLER: Calling handle_message for user {update.effective_user.id}")
-                        return await handle_message(update, context)
-                        
-                elif update.callback_query:
-                    # Handle callback queries
-                    logger.info(f"SYNC_HANDLER: Calling handle_callback_query for user {update.effective_user.id}")
-                    return await handle_callback_query(update, context)
-                    
+                        return await update.message.reply_text("Access denied.")
+                elif text.startswith('/done_bulk'):
+                    if update.effective_user.id in [ADMIN_ID] + SECONDARY_ADMIN_IDS:
+                        logger.info(f"SYNC_HANDLER: Calling done_bulk for user {update.effective_user.id}")
+                        return await admin_product_management.done_bulk_adding(update, context)
+                    else:
+                        return await update.message.reply_text("Access denied.")
                 else:
-                    # Handle other types (photos, videos, etc.)
-                    logger.info(f"SYNC_HANDLER: Calling handle_message for other content from user {update.effective_user.id}")
+                    # Handle regular messages (states, etc.)
+                    logger.info(f"SYNC_HANDLER: Calling handle_message for user {update.effective_user.id}")
                     return await handle_message(update, context)
-            
-            # Use asyncio.run in a separate thread to avoid event loop conflicts
-            return asyncio.run(run_handler())
+                    
+            elif update.callback_query:
+                # Handle callback queries
+                logger.info(f"SYNC_HANDLER: Calling handle_callback_query for user {update.effective_user.id}")
+                return await handle_callback_query(update, context)
+                
+            else:
+                # Handle other types (photos, videos, etc.)
+                logger.info(f"SYNC_HANDLER: Calling handle_message for other content from user {update.effective_user.id}")
+                return await handle_message(update, context)
         
-        # Run in a thread pool to isolate from main thread
-        logger.info(f"SYNC_HANDLER: Using thread pool executor for isolation")
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(run_handler_sync)
-            result = future.result(timeout=30)  # 30 second timeout
+        # Schedule the coroutine on the main event loop but don't wait for it
+        logger.info(f"SYNC_HANDLER: Scheduling handler on main event loop")
+        future = asyncio.run_coroutine_threadsafe(run_handler(), main_loop)
         
-        logger.info(f"SYNC_HANDLER: Handler completed successfully")
+        # Don't wait for the result - just let it run in the background
+        logger.info(f"SYNC_HANDLER: Handler scheduled successfully, not waiting for result")
         return True
             
     except Exception as e:
