@@ -362,6 +362,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error(msg="Exception while handling an update:", exc_info=context.error)
     logger.error(f"Caught error type: {type(context.error)}")
+    
+    # Debug logging
+    if isinstance(update, Update):
+        if update.message and update.message.text:
+            logger.error(f"DEBUG: Error occurred while processing message: '{update.message.text}' from user {update.effective_user.id if update.effective_user else 'Unknown'}")
+    
     chat_id = None
     user_id = None
 
@@ -700,6 +706,19 @@ def telegram_webhook():
         logger.error(f"Error processing Telegram webhook: {e}", exc_info=True)
         return Response("Internal Server Error", status=500)
 
+async def debug_start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Debug wrapper for start handler"""
+    logger.info(f"DEBUG: Start command received from user {update.effective_user.id}")
+    try:
+        await user.start(update, context)
+        logger.info(f"DEBUG: Start handler completed successfully for user {update.effective_user.id}")
+    except Exception as e:
+        logger.error(f"DEBUG: Error in start handler for user {update.effective_user.id}: {e}", exc_info=True)
+        try:
+            await update.message.reply_text("An error occurred. Please try again.")
+        except Exception as reply_error:
+            logger.error(f"DEBUG: Failed to send error reply: {reply_error}")
+
 def main() -> None:
     global telegram_app, main_loop
     logger.info("Starting bot...")
@@ -711,7 +730,9 @@ def main() -> None:
     app_builder.post_shutdown(post_shutdown)
     application = app_builder.build()
 
-    application.add_handler(CommandHandler("start", user.start)) 
+    logger.info("Registering handlers...")
+    application.add_handler(CommandHandler("start", debug_start_handler)) 
+    logger.info("Registered start command handler")
     application.add_handler(CommandHandler("admin", admin_product_management.handle_admin_menu)) 
     application.add_handler(CommandHandler("done_bulk", admin_product_management.handle_done_bulk_command))
     application.add_handler(CallbackQueryHandler(handle_callback_query))
@@ -720,6 +741,7 @@ def main() -> None:
         handle_message
     ))
     application.add_error_handler(error_handler)
+    logger.info("All handlers registered successfully")
     telegram_app = application
     main_loop = asyncio.get_event_loop()
     if BASKET_TIMEOUT > 0:
