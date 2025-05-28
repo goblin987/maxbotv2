@@ -693,39 +693,67 @@ def call_handler_synchronously(update: Update):
     logger.info(f"SYNC_HANDLER: Processing update {update.update_id} synchronously")
     
     try:
-        # Check if this is a /start command
-        if update.message and update.message.text and update.message.text.startswith('/start'):
-            logger.info(f"SYNC_HANDLER: Detected /start command from user {update.effective_user.id}")
+        # Create a context object manually
+        from telegram.ext import ContextTypes
+        
+        logger.info(f"SYNC_HANDLER: Creating context for bot processing")
+        context = ContextTypes.DEFAULT_TYPE(
+            application=telegram_app,
+            chat_id=update.effective_chat.id,
+            user_id=update.effective_user.id
+        )
+        
+        # Create a new event loop for this thread
+        import asyncio
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
             
-            # Create a context object manually
-            from telegram.ext import ContextTypes
+            logger.info(f"SYNC_HANDLER: Created new event loop, processing update")
             
-            logger.info(f"SYNC_HANDLER: Creating context for bot processing")
-            context = ContextTypes.DEFAULT_TYPE(
-                application=telegram_app,
-                chat_id=update.effective_chat.id,
-                user_id=update.effective_user.id
-            )
-            
-            logger.info(f"SYNC_HANDLER: About to call simple_start_handler directly")
-            # Create a new event loop for this thread
-            import asyncio
-            try:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
+            # Handle different types of updates
+            if update.message and update.message.text:
+                text = update.message.text.strip()
                 
-                logger.info(f"SYNC_HANDLER: Created new event loop, calling handler")
-                result = loop.run_until_complete(simple_start_handler(update, context))
-                logger.info(f"SYNC_HANDLER: Handler completed successfully")
+                # Handle commands
+                if text.startswith('/start'):
+                    logger.info(f"SYNC_HANDLER: Calling user.start for user {update.effective_user.id}")
+                    result = loop.run_until_complete(user.start(update, context))
+                elif text.startswith('/admin'):
+                    if update.effective_user.id in [ADMIN_ID] + SECONDARY_ADMIN_IDS:
+                        logger.info(f"SYNC_HANDLER: Calling admin menu for user {update.effective_user.id}")
+                        result = loop.run_until_complete(admin_product_management.handle_admin_menu(update, context))
+                    else:
+                        result = loop.run_until_complete(update.message.reply_text("Access denied."))
+                elif text.startswith('/done_bulk'):
+                    if update.effective_user.id in [ADMIN_ID] + SECONDARY_ADMIN_IDS:
+                        logger.info(f"SYNC_HANDLER: Calling done_bulk for user {update.effective_user.id}")
+                        result = loop.run_until_complete(admin_product_management.done_bulk_adding(update, context))
+                    else:
+                        result = loop.run_until_complete(update.message.reply_text("Access denied."))
+                else:
+                    # Handle regular messages (states, etc.)
+                    logger.info(f"SYNC_HANDLER: Calling handle_message for user {update.effective_user.id}")
+                    result = loop.run_until_complete(handle_message(update, context))
+                    
+            elif update.callback_query:
+                # Handle callback queries
+                logger.info(f"SYNC_HANDLER: Calling handle_callback_query for user {update.effective_user.id}")
+                result = loop.run_until_complete(handle_callback_query(update, context))
                 
-                loop.close()
-                return True
-            except Exception as loop_e:
-                logger.error(f"SYNC_HANDLER: Error in event loop execution: {loop_e}", exc_info=True)
-                return False
-        else:
-            logger.info(f"SYNC_HANDLER: Not a /start command, skipping for now")
+            else:
+                # Handle other types (photos, videos, etc.)
+                logger.info(f"SYNC_HANDLER: Calling handle_message for other content from user {update.effective_user.id}")
+                result = loop.run_until_complete(handle_message(update, context))
+            
+            logger.info(f"SYNC_HANDLER: Handler completed successfully")
+            loop.close()
             return True
+            
+        except Exception as loop_e:
+            logger.error(f"SYNC_HANDLER: Error in event loop execution: {loop_e}", exc_info=True)
+            loop.close()
+            return False
             
     except Exception as e:
         logger.error(f"SYNC_HANDLER: Error in synchronous handler: {e}", exc_info=True)
@@ -747,8 +775,10 @@ def telegram_webhook():
             logger.info(f"DEBUG: Update {update.update_id} contains message: '{update.message.text}' from user {update.effective_user.id}")
             if update.message.text and update.message.text.startswith('/'):
                 logger.info(f"DEBUG: Command detected: '{update.message.text}'")
+        elif update and update.callback_query:
+            logger.info(f"DEBUG: Update {update.update_id} contains callback query: '{update.callback_query.data}' from user {update.effective_user.id}")
         
-        # NEW APPROACH: Call handler synchronously
+        # Call handler synchronously
         logger.info(f"SYNC_APPROACH: Attempting synchronous handler processing")
         try:
             success = call_handler_synchronously(update)
@@ -767,95 +797,6 @@ def telegram_webhook():
         logger.error(f"Error processing Telegram webhook: {e}", exc_info=True)
         return Response("Internal Server Error", status=500)
 
-async def simple_start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Simple test start handler"""
-    user_id = update.effective_user.id
-    logger.info(f"SIMPLE START: ====== HANDLER CALLED ====== Command received from user {user_id}")
-    logger.info(f"SIMPLE START: Update object: {update}")
-    logger.info(f"SIMPLE START: Context object: {context}")
-    logger.info(f"SIMPLE START: Bot instance: {context.bot}")
-    
-    try:
-        logger.info(f"SIMPLE START: Attempting to send message to user {user_id}")
-        logger.info(f"SIMPLE START: Chat ID: {update.effective_chat.id}")
-        logger.info(f"SIMPLE START: Message object: {update.message}")
-        
-        message = await update.message.reply_text("Bot is working! This is a test response.")
-        logger.info(f"SIMPLE START: Successfully sent test message to user {user_id}, message_id: {message.message_id}")
-    except Exception as e:
-        logger.error(f"SIMPLE START: Error sending test message to user {user_id}: {e}", exc_info=True)
-        # Try an alternative sending method
-        try:
-            logger.info(f"SIMPLE START: Trying alternative send method for user {user_id}")
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="Bot is working! (Alternative method)")
-            logger.info(f"SIMPLE START: Alternative method successful for user {user_id}")
-        except Exception as e2:
-            logger.error(f"SIMPLE START: Alternative method also failed for user {user_id}: {e2}", exc_info=True)
-            # Try the most basic method
-            try:
-                logger.info(f"SIMPLE START: Trying most basic send method for user {user_id}")
-                await context.bot.send_message(user_id, "Basic test message")
-                logger.info(f"SIMPLE START: Basic method successful for user {user_id}")
-            except Exception as e3:
-                logger.error(f"SIMPLE START: All methods failed for user {user_id}: {e3}", exc_info=True)
-
-async def debug_start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Debug wrapper for start handler"""
-    logger.info(f"DEBUG: Start command received from user {update.effective_user.id}")
-    try:
-        await user.start(update, context)
-        logger.info(f"DEBUG: Start handler completed successfully for user {update.effective_user.id}")
-    except Exception as e:
-        logger.error(f"DEBUG: Error in start handler for user {update.effective_user.id}: {e}", exc_info=True)
-        try:
-            await update.message.reply_text("An error occurred. Please try again.")
-        except Exception as reply_error:
-            logger.error(f"DEBUG: Failed to send error reply: {reply_error}")
-
-async def process_update_with_debug(self, update: Update, check_result: object = None) -> None:
-    """Wrapper for Application.process_update with detailed debugging"""
-    logger.info(f"PROCESS_UPDATE_WITH_DEBUG: WRAPPER FUNCTION CALLED for update {update.update_id if update else 'None'}")
-    logger.info(f"WRAPPER: process_update_with_debug called for update {update.update_id}")
-    
-    # Check what handlers we have registered
-    logger.info(f"WRAPPER: Application has {len(self.handlers)} handler groups")
-    for group_num, handlers in self.handlers.items():
-        logger.info(f"WRAPPER: Group {group_num} has {len(handlers)} handlers")
-        for i, handler in enumerate(handlers):
-            logger.info(f"WRAPPER:   Handler {i}: {type(handler).__name__}")
-            if hasattr(handler, 'command') and handler.command:
-                logger.info(f"WRAPPER:     Command(s): {handler.command}")
-    
-    # Check if the update should match any CommandHandler
-    if update.message and update.message.text:
-        text = update.message.text
-        logger.info(f"WRAPPER: Message text: '{text}'")
-        
-        if text.startswith('/'):
-            command_parts = text.split()
-            command = command_parts[0][1:]  # Remove the '/'
-            logger.info(f"WRAPPER: Extracted command: '{command}'")
-            
-            # Check each CommandHandler to see if it should match
-            for group_num, handlers in self.handlers.items():
-                for i, handler in enumerate(handlers):
-                    if hasattr(handler, 'command') and handler.command:
-                        logger.info(f"WRAPPER: Checking handler {i} with command(s): {handler.command}")
-                        if isinstance(handler.command, list):
-                            should_match = command in handler.command
-                        else:
-                            should_match = command == handler.command
-                        logger.info(f"WRAPPER: Should match: {should_match}")
-    
-    # Call the original process_update method
-    logger.info(f"WRAPPER: About to call original process_update for {update.update_id}")
-    try:
-        await self._original_process_update(update, check_result)
-        logger.info(f"WRAPPER: Original process_update completed for {update.update_id}")
-    except Exception as e:
-        logger.error(f"WRAPPER: Error in original process_update for {update.update_id}: {e}", exc_info=True)
-        raise
-
 def main() -> None:
     global telegram_app, main_loop
     logger.info("Starting bot...")
@@ -867,18 +808,9 @@ def main() -> None:
     app_builder.post_shutdown(post_shutdown)
     application = app_builder.build()
 
-    # Monkey patch the process_update method to add debugging
-    logger.info("Adding debug wrapper to Application.process_update...")
-    application._original_process_update = application.process_update
-    application.process_update = process_update_with_debug.__get__(application, type(application))
-    
     logger.info("Registering handlers...")
-    # Use simple handler first to test basic functionality
-    start_handler = CommandHandler("start", simple_start_handler)
-    application.add_handler(start_handler) 
-    logger.info(f"Registered start command handler: {start_handler}")
-    logger.info(f"Handler callback: {start_handler.callback}")
-    
+    # Register handlers (but we'll handle them synchronously via webhook)
+    application.add_handler(CommandHandler("start", user.start))
     application.add_handler(CommandHandler("admin", admin_product_management.handle_admin_menu)) 
     application.add_handler(CommandHandler("done_bulk", admin_product_management.handle_done_bulk_command))
     application.add_handler(CallbackQueryHandler(handle_callback_query))
@@ -887,13 +819,6 @@ def main() -> None:
         handle_message
     ))
     application.add_error_handler(error_handler)
-    
-    # Debug: Check all registered handlers
-    logger.info(f"All registered handlers: {application.handlers}")
-    for group_num, handlers in application.handlers.items():
-        logger.info(f"Handler group {group_num}: {len(handlers)} handlers")
-        for i, handler in enumerate(handlers):
-            logger.info(f"  Handler {i}: {type(handler).__name__} - {handler}")
     
     logger.info("All handlers registered successfully")
     telegram_app = application
