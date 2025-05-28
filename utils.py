@@ -1055,6 +1055,27 @@ def init_db():
             except sqlite3.OperationalError as alter_e:
                  if "duplicate column name: is_worker" in str(alter_e): pass # Ignore if already exists
                  else: raise # Reraise other errors
+            # <<< ADDED: Add worker_status column if missing >>>
+            try:
+                c.execute("ALTER TABLE users ADD COLUMN worker_status TEXT DEFAULT 'active'")
+                logger.info("Added 'worker_status' column to users table.")
+            except sqlite3.OperationalError as alter_e:
+                if "duplicate column name: worker_status" in str(alter_e): pass
+                else: raise
+            # <<< ADDED: Add worker_alias column if missing >>>
+            try:
+                c.execute("ALTER TABLE users ADD COLUMN worker_alias TEXT")
+                logger.info("Added 'worker_alias' column to users table.")
+            except sqlite3.OperationalError as alter_e:
+                if "duplicate column name: worker_alias" in str(alter_e): pass
+                else: raise
+            # <<< ADDED: Add worker_daily_quota column if missing >>>
+            try:
+                c.execute("ALTER TABLE users ADD COLUMN worker_daily_quota INTEGER DEFAULT 10")
+                logger.info("Added 'worker_daily_quota' column to users table.")
+            except sqlite3.OperationalError as alter_e:
+                if "duplicate column name: worker_daily_quota" in str(alter_e): pass
+                else: raise
             # <<< END ADDED >>>
 
 

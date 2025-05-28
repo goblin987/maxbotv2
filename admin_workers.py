@@ -3,7 +3,7 @@
 import sqlite3
 import logging
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 # --- Telegram Imports ---
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -28,14 +28,57 @@ async def handle_manage_workers_menu(update: Update, context: ContextTypes.DEFAU
     if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
     lang, lang_data = _get_lang_data(context)
 
-    # TODO: Add translations for these if needed
-    msg = "👷 Manage Workers\n\nSelect an action:"
+    # Get quick stats
+    conn = None
+    total_workers = 0
+    active_workers = 0
+    today_drops = 0
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        
+        # Total workers
+        c.execute("SELECT COUNT(*) as count FROM users WHERE is_worker = 1")
+        result = c.fetchone()
+        total_workers = result['count'] if result else 0
+        
+        # Active workers
+        c.execute("SELECT COUNT(*) as count FROM users WHERE is_worker = 1 AND worker_status = 'active'")
+        result = c.fetchone()
+        active_workers = result['count'] if result else 0
+        
+        # Today's drops by all workers
+        today = datetime.now().strftime('%Y-%m-%d')
+        c.execute("""
+            SELECT COUNT(*) as count 
+            FROM products p 
+            JOIN users u ON p.added_by = u.user_id 
+            WHERE u.is_worker = 1 AND DATE(p.added_date) = ?
+        """, (today,))
+        result = c.fetchone()
+        today_drops = result['count'] if result else 0
+        
+    except sqlite3.Error as e:
+        logger.error(f"Error fetching worker overview stats: {e}")
+    finally:
+        if conn: conn.close()
+
+    msg = f"👷 Manage Workers\n\n"
+    msg += f"📊 **Quick Overview:**\n"
+    msg += f"• Total Workers: {total_workers}\n"
+    msg += f"• Active Workers: {active_workers}\n"
+    msg += f"• Today's Drops: {today_drops}\n\n"
+    msg += "Select an action:"
+    
     keyboard = [
         [InlineKeyboardButton("➕ Add Worker", callback_data="adm_add_worker_prompt_id")],
         [InlineKeyboardButton("👥 View Workers", callback_data="adm_view_workers_list|0")],
+        [InlineKeyboardButton("📊 Worker Analytics", callback_data="adm_worker_analytics")],
+        [InlineKeyboardButton("🏆 Leaderboard", callback_data="adm_worker_leaderboard")],
+        [InlineKeyboardButton("⚙️ Worker Settings", callback_data="adm_worker_settings")],
         [InlineKeyboardButton("⬅️ Back to Admin Menu", callback_data="admin_menu")]
     ]
-    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
     await query.answer()
 
 # --- Add Worker Flow ---
@@ -332,5 +375,573 @@ async def handle_adm_worker_remove_confirm(update: Update, context: ContextTypes
         [InlineKeyboardButton("❌ No, Cancel", callback_data=f"adm_view_specific_worker|{worker_user_id}|{offset}")]
     ]
     await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
+
+# --- NEW: Worker Analytics Dashboard ---
+async def handle_adm_worker_analytics(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
+    """Show comprehensive worker analytics dashboard"""
+    query = update.callback_query
+    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    
+    analytics = await _get_worker_analytics()
+    
+    msg = "📊 Worker Analytics Dashboard\n\n"
+    
+    # Overview stats
+    msg += f"📈 **Performance Overview:**\n"
+    msg += f"• Total Workers: {analytics['overview']['total_workers']}\n"
+    msg += f"• Active Workers: {analytics['overview']['active_workers']}\n"
+    msg += f"• Today's Total Drops: {analytics['overview']['today_drops']}\n"
+    msg += f"• This Month's Drops: {analytics['overview']['month_drops']}\n\n"
+    
+    # Top performers
+    msg += f"🏆 **Top Performers (This Month):**\n"
+    for i, worker in enumerate(analytics['top_performers'][:5], 1):
+        username = worker['username'] or f"ID_{worker['user_id']}"
+        alias = f" ({worker['alias']})" if worker['alias'] else ""
+        msg += f"{i}. @{username}{alias}: {worker['drops']} drops\n"
+    
+    msg += f"\n📊 **Quota Achievement:**\n"
+    msg += f"• Average Quota Achievement: {analytics['quota']['avg_achievement']:.1f}%\n"
+    msg += f"• Workers Meeting Quota: {analytics['quota']['meeting_quota']}/{analytics['overview']['active_workers']}\n"
+    msg += f"• Best Performer: {analytics['quota']['best_performer']}\n\n"
+    
+    msg += f"📅 **Activity Trends:**\n"
+    msg += f"• Most Active Day: {analytics['trends']['most_active_day']}\n"
+    msg += f"• Average Daily Drops: {analytics['trends']['avg_daily_drops']:.1f}\n"
+    msg += f"• Growth vs Last Month: {analytics['trends']['growth_percentage']:+.1f}%"
+    
+    keyboard = [
+        [InlineKeyboardButton("📈 Detailed Report", callback_data="adm_worker_detailed_report")],
+        [InlineKeyboardButton("📊 Export Data", callback_data="adm_worker_export_data")],
+        [InlineKeyboardButton("⬅️ Back to Worker Menu", callback_data="manage_workers_menu")]
+    ]
+    
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    await query.answer()
+
+# --- NEW: Admin Worker Leaderboard ---
+async def handle_adm_worker_leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
+    """Show detailed worker leaderboard for admins"""
+    query = update.callback_query
+    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    
+    leaderboard = await _get_detailed_worker_leaderboard()
+    
+    msg = "🏆 Worker Leaderboard (This Month)\n\n"
+    
+    for i, worker in enumerate(leaderboard[:15], 1):
+        emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
+        username = worker['username'] or f"ID_{worker['user_id']}"
+        alias = f" ({worker['alias']})" if worker['alias'] else ""
+        status_emoji = "🟢" if worker['status'] == 'active' else "🔴"
+        
+        msg += f"{emoji} {status_emoji} @{username}{alias}\n"
+        msg += f"   • Drops: {worker['drops_this_month']}\n"
+        msg += f"   • Daily Avg: {worker['daily_avg']:.1f}\n"
+        msg += f"   • Quota: {worker['quota_achievement']:.1f}%\n"
+        msg += f"   • Last Active: {worker['last_active']}\n\n"
+    
+    keyboard = [
+        [InlineKeyboardButton("📊 Analytics", callback_data="adm_worker_analytics")],
+        [InlineKeyboardButton("⚙️ Manage Quotas", callback_data="adm_worker_quota_management")],
+        [InlineKeyboardButton("⬅️ Back to Worker Menu", callback_data="manage_workers_menu")]
+    ]
+    
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    await query.answer()
+
+# --- NEW: Worker Settings ---
+async def handle_adm_worker_settings(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
+    """Manage global worker settings"""
+    query = update.callback_query
+    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    
+    settings = await _get_worker_settings()
+    
+    msg = "⚙️ Worker Settings\n\n"
+    msg += f"📊 **Current Settings:**\n"
+    msg += f"• Default Daily Quota: {settings['default_quota']} drops\n"
+    msg += f"• Auto-notifications: {'✅ Enabled' if settings['notifications'] else '❌ Disabled'}\n"
+    msg += f"• Performance Reports: {'✅ Weekly' if settings['reports'] else '❌ Disabled'}\n\n"
+    msg += "Select an action:"
+    
+    keyboard = [
+        [InlineKeyboardButton("📊 Set Default Quota", callback_data="adm_set_default_quota")],
+        [InlineKeyboardButton("🔔 Toggle Notifications", callback_data="adm_toggle_worker_notifications")],
+        [InlineKeyboardButton("👥 Bulk Worker Actions", callback_data="adm_bulk_worker_actions")],
+        [InlineKeyboardButton("📋 Worker Templates", callback_data="adm_worker_templates")],
+        [InlineKeyboardButton("⬅️ Back to Worker Menu", callback_data="manage_workers_menu")]
+    ]
+    
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    await query.answer()
+
+# --- Enhanced Worker Profile with More Details ---
+async def handle_adm_view_specific_worker_enhanced(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
+    """Enhanced worker profile view with detailed statistics"""
+    query = update.callback_query
+    admin_id = query.from_user.id
+    if admin_id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not params or len(params) < 2 or not params[0].isdigit() or not params[1].isdigit():
+        await query.answer("Error: Invalid data.", show_alert=True); return
+
+    worker_user_id = int(params[0])
+    offset = int(params[1])
+    
+    # Get comprehensive worker data
+    worker_data = await _get_comprehensive_worker_data(worker_user_id)
+    if not worker_data:
+        await query.edit_message_text("Worker not found or no longer a worker.",
+                                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Worker List", callback_data=f"adm_view_workers_list|{offset}")]]))
+        return
+
+    username = worker_data['username'] or f"ID_{worker_user_id}"
+    alias = f" ({worker_data['alias']})" if worker_data['alias'] else ""
+    status_emoji = "🟢" if worker_data['status'] == 'active' else "🔴"
+    
+    msg = f"👷 {status_emoji} Worker Profile: @{username}{alias}\n\n"
+    
+    # Basic info
+    msg += f"📋 **Basic Information:**\n"
+    msg += f"• Status: {worker_data['status'].capitalize()}\n"
+    msg += f"• Daily Quota: {worker_data['daily_quota']} drops\n"
+    msg += f"• Worker Since: {worker_data['worker_since']}\n\n"
+    
+    # Today's performance
+    msg += f"📅 **Today's Performance:**\n"
+    msg += f"• Drops Added: {worker_data['today']['drops']}\n"
+    msg += f"• Quota Progress: {worker_data['today']['quota_progress']:.1f}%\n"
+    msg += f"• Avg per Hour: {worker_data['today']['avg_per_hour']:.1f}\n\n"
+    
+    # This month's stats
+    msg += f"📊 **This Month:**\n"
+    msg += f"• Total Drops: {worker_data['month']['drops']}\n"
+    msg += f"• Daily Average: {worker_data['month']['daily_avg']:.1f}\n"
+    msg += f"• Ranking: #{worker_data['month']['rank']} of {worker_data['month']['total_workers']}\n\n"
+    
+    # All-time stats
+    msg += f"🏆 **All-Time Stats:**\n"
+    msg += f"• Total Drops: {worker_data['alltime']['drops']}\n"
+    msg += f"• Days Active: {worker_data['alltime']['days_active']}\n"
+    msg += f"• Best Product: {worker_data['alltime']['top_product']}\n"
+    
+    keyboard = [
+        [InlineKeyboardButton(f"{'🟢 Activate' if worker_data['status'] == 'inactive' else '🔴 Deactivate'} Worker", 
+                             callback_data=f"adm_worker_toggle_status|{worker_user_id}|{offset}")],
+        [InlineKeyboardButton("⚙️ Edit Quota", callback_data=f"adm_worker_edit_quota|{worker_user_id}|{offset}"),
+         InlineKeyboardButton("🏷️ Edit Alias", callback_data=f"adm_worker_edit_alias|{worker_user_id}|{offset}")],
+        [InlineKeyboardButton("📊 Detailed Report", callback_data=f"adm_worker_detailed_stats|{worker_user_id}|{offset}"),
+         InlineKeyboardButton("📈 Activity Log", callback_data=f"adm_worker_activity_log|{worker_user_id}|{offset}")],
+        [InlineKeyboardButton("🗑️ Remove Worker Role", callback_data=f"adm_worker_remove_confirm|{worker_user_id}|{offset}")],
+        [InlineKeyboardButton("⬅️ Back to Worker List", callback_data=f"adm_view_workers_list|{offset}")]
+    ]
+    
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    await query.answer()
+
+# --- Message Handler for Worker Management ---
+async def handle_admin_worker_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle text messages for worker management flows"""
+    user_id = update.effective_user.id
+    text = update.message.text.strip() if update.message.text else ""
+    
+    # Only handle admin worker messages
+    if user_id != ADMIN_ID:
+        return
+    
+    state = context.user_data.get('state')
+    
+    if state == 'awaiting_worker_id_add':
+        await handle_adm_add_worker_id_message(update, context)
+    elif state == 'awaiting_worker_quota_edit':
+        await handle_adm_worker_quota_edit_message(update, context)
+    elif state == 'awaiting_worker_alias_edit':
+        await handle_adm_worker_alias_edit_message(update, context)
+    elif state == 'awaiting_default_quota_set':
+        await handle_adm_default_quota_set_message(update, context)
+
+# --- Helper Functions for Enhanced Features ---
+async def _get_worker_analytics() -> dict:
+    """Get comprehensive worker analytics"""
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        
+        today = datetime.now().strftime('%Y-%m-%d')
+        month_start = datetime.now().replace(day=1).strftime('%Y-%m-%d')
+        last_month_start = (datetime.now().replace(day=1) - timedelta(days=1)).replace(day=1).strftime('%Y-%m-%d')
+        last_month_end = (datetime.now().replace(day=1) - timedelta(days=1)).strftime('%Y-%m-%d')
+        
+        analytics = {}
+        
+        # Overview stats
+        c.execute("SELECT COUNT(*) as total FROM users WHERE is_worker = 1")
+        total_workers = c.fetchone()['total']
+        
+        c.execute("SELECT COUNT(*) as active FROM users WHERE is_worker = 1 AND worker_status = 'active'")
+        active_workers = c.fetchone()['active']
+        
+        c.execute("""
+            SELECT COUNT(*) as today_drops 
+            FROM products p JOIN users u ON p.added_by = u.user_id 
+            WHERE u.is_worker = 1 AND DATE(p.added_date) = ?
+        """, (today,))
+        today_drops = c.fetchone()['today_drops']
+        
+        c.execute("""
+            SELECT COUNT(*) as month_drops 
+            FROM products p JOIN users u ON p.added_by = u.user_id 
+            WHERE u.is_worker = 1 AND DATE(p.added_date) >= ?
+        """, (month_start,))
+        month_drops = c.fetchone()['month_drops']
+        
+        analytics['overview'] = {
+            'total_workers': total_workers,
+            'active_workers': active_workers,
+            'today_drops': today_drops,
+            'month_drops': month_drops
+        }
+        
+        # Top performers
+        c.execute("""
+            SELECT u.user_id, u.username, u.worker_alias, COUNT(p.id) as drops
+            FROM users u
+            LEFT JOIN products p ON u.user_id = p.added_by AND DATE(p.added_date) >= ?
+            WHERE u.is_worker = 1 AND u.worker_status = 'active'
+            GROUP BY u.user_id, u.username, u.worker_alias
+            ORDER BY drops DESC
+            LIMIT 10
+        """, (month_start,))
+        
+        top_performers = []
+        for row in c.fetchall():
+            top_performers.append({
+                'user_id': row['user_id'],
+                'username': row['username'],
+                'alias': row['worker_alias'],
+                'drops': row['drops']
+            })
+        analytics['top_performers'] = top_performers
+        
+        # Quota achievement stats
+        c.execute("""
+            SELECT u.worker_daily_quota, COUNT(p.id) as month_drops
+            FROM users u
+            LEFT JOIN products p ON u.user_id = p.added_by AND DATE(p.added_date) >= ?
+            WHERE u.is_worker = 1 AND u.worker_status = 'active'
+            GROUP BY u.user_id, u.worker_daily_quota
+        """, (month_start,))
+        
+        quota_achievements = []
+        days_in_month = datetime.now().day
+        for row in c.fetchall():
+            daily_avg = row['month_drops'] / max(1, days_in_month)
+            achievement = (daily_avg / max(1, row['worker_daily_quota'])) * 100
+            quota_achievements.append(achievement)
+        
+        avg_achievement = sum(quota_achievements) / max(1, len(quota_achievements))
+        meeting_quota = len([a for a in quota_achievements if a >= 100])
+        
+        # Find best performer
+        best_performer = top_performers[0]['username'] if top_performers else "None"
+        
+        analytics['quota'] = {
+            'avg_achievement': avg_achievement,
+            'meeting_quota': meeting_quota,
+            'best_performer': best_performer
+        }
+        
+        # Activity trends
+        c.execute("""
+            SELECT DATE(p.added_date) as date, COUNT(*) as drops
+            FROM products p JOIN users u ON p.added_by = u.user_id
+            WHERE u.is_worker = 1 AND DATE(p.added_date) >= ?
+            GROUP BY DATE(p.added_date)
+            ORDER BY drops DESC
+            LIMIT 1
+        """, (month_start,))
+        
+        most_active_result = c.fetchone()
+        most_active_day = f"{most_active_result['date']} ({most_active_result['drops']} drops)" if most_active_result else "N/A"
+        
+        avg_daily_drops = month_drops / max(1, days_in_month)
+        
+        # Growth calculation
+        c.execute("""
+            SELECT COUNT(*) as last_month_drops 
+            FROM products p JOIN users u ON p.added_by = u.user_id 
+            WHERE u.is_worker = 1 AND DATE(p.added_date) BETWEEN ? AND ?
+        """, (last_month_start, last_month_end))
+        
+        last_month_drops = c.fetchone()['last_month_drops']
+        growth_percentage = ((month_drops - last_month_drops) / max(1, last_month_drops)) * 100
+        
+        analytics['trends'] = {
+            'most_active_day': most_active_day,
+            'avg_daily_drops': avg_daily_drops,
+            'growth_percentage': growth_percentage
+        }
+        
+        return analytics
+        
+    except sqlite3.Error as e:
+        logger.error(f"Error fetching worker analytics: {e}")
+        return {
+            'overview': {'total_workers': 0, 'active_workers': 0, 'today_drops': 0, 'month_drops': 0},
+            'top_performers': [],
+            'quota': {'avg_achievement': 0, 'meeting_quota': 0, 'best_performer': 'None'},
+            'trends': {'most_active_day': 'N/A', 'avg_daily_drops': 0, 'growth_percentage': 0}
+        }
+    finally:
+        if conn: conn.close()
+
+async def _get_detailed_worker_leaderboard() -> list:
+    """Get detailed worker leaderboard with extended information"""
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        
+        month_start = datetime.now().replace(day=1).strftime('%Y-%m-%d')
+        days_in_month = datetime.now().day
+        
+        c.execute("""
+            SELECT 
+                u.user_id, u.username, u.worker_alias, u.worker_status, u.worker_daily_quota,
+                COUNT(p.id) as drops_this_month,
+                MAX(p.added_date) as last_active
+            FROM users u
+            LEFT JOIN products p ON u.user_id = p.added_by AND DATE(p.added_date) >= ?
+            WHERE u.is_worker = 1
+            GROUP BY u.user_id, u.username, u.worker_alias, u.worker_status, u.worker_daily_quota
+            ORDER BY drops_this_month DESC
+        """, (month_start,))
+        
+        results = c.fetchall()
+        leaderboard = []
+        
+        for result in results:
+            daily_avg = result['drops_this_month'] / max(1, days_in_month)
+            quota_achievement = (daily_avg / max(1, result['worker_daily_quota'])) * 100
+            
+            last_active = "Never"
+            if result['last_active']:
+                try:
+                    last_active = datetime.fromisoformat(result['last_active']).strftime("%m-%d")
+                except:
+                    pass
+            
+            leaderboard.append({
+                'user_id': result['user_id'],
+                'username': result['username'],
+                'alias': result['worker_alias'],
+                'status': result['worker_status'],
+                'drops_this_month': result['drops_this_month'],
+                'daily_avg': daily_avg,
+                'quota_achievement': quota_achievement,
+                'last_active': last_active
+            })
+        
+        return leaderboard
+        
+    except sqlite3.Error as e:
+        logger.error(f"Error fetching detailed worker leaderboard: {e}")
+        return []
+    finally:
+        if conn: conn.close()
+
+async def _get_worker_settings() -> dict:
+    """Get current worker settings"""
+    # For now, return default settings - could be stored in a settings table
+    return {
+        'default_quota': 10,
+        'notifications': True,
+        'reports': True
+    }
+
+async def _get_comprehensive_worker_data(worker_user_id: int) -> dict:
+    """Get all data for a specific worker"""
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        
+        # Basic worker info
+        c.execute("""
+            SELECT username, worker_status, worker_alias, worker_daily_quota,
+                   (SELECT MIN(added_date) FROM products WHERE added_by = ?) as worker_since
+            FROM users
+            WHERE user_id = ? AND is_worker = 1
+        """, (worker_user_id, worker_user_id))
+        
+        worker_info = c.fetchone()
+        if not worker_info:
+            return None
+        
+        worker_since = "N/A"
+        if worker_info['worker_since']:
+            try:
+                worker_since = datetime.fromisoformat(worker_info['worker_since']).strftime("%Y-%m-%d")
+            except:
+                pass
+        
+        today = datetime.now().strftime('%Y-%m-%d')
+        month_start = datetime.now().replace(day=1).strftime('%Y-%m-%d')
+        days_in_month = datetime.now().day
+        
+        # Today's stats
+        c.execute("""
+            SELECT COUNT(*) as drops, MIN(added_date) as first_drop
+            FROM products
+            WHERE added_by = ? AND DATE(added_date) = ?
+        """, (worker_user_id, today))
+        
+        today_result = c.fetchone()
+        drops_today = today_result['drops'] if today_result else 0
+        quota_progress = (drops_today / max(1, worker_info['worker_daily_quota'])) * 100
+        
+        # Calculate average per hour for today
+        avg_per_hour = 0
+        if today_result['first_drop'] and drops_today > 0:
+            try:
+                first_time = datetime.fromisoformat(today_result['first_drop'])
+                hours_working = max(1, (datetime.now() - first_time).total_seconds() / 3600)
+                avg_per_hour = drops_today / hours_working
+            except:
+                pass
+        
+        # Month stats
+        c.execute("""
+            SELECT COUNT(*) as month_drops
+            FROM products
+            WHERE added_by = ? AND DATE(added_date) >= ?
+        """, (worker_user_id, month_start))
+        
+        month_drops = c.fetchone()['month_drops']
+        month_daily_avg = month_drops / max(1, days_in_month)
+        
+        # Get ranking
+        c.execute("""
+            SELECT user_id, COUNT(*) as drops
+            FROM products p JOIN users u ON p.added_by = u.user_id
+            WHERE u.is_worker = 1 AND u.worker_status = 'active' AND DATE(p.added_date) >= ?
+            GROUP BY user_id
+            ORDER BY drops DESC
+        """, (month_start,))
+        
+        ranking_results = c.fetchall()
+        rank = 0
+        for i, result in enumerate(ranking_results, 1):
+            if result['user_id'] == worker_user_id:
+                rank = i
+                break
+        
+        # All-time stats
+        c.execute("""
+            SELECT COUNT(*) as total_drops, 
+                   COUNT(DISTINCT DATE(added_date)) as days_active,
+                   product_type
+            FROM products
+            WHERE added_by = ?
+            GROUP BY product_type
+            ORDER BY COUNT(*) DESC
+        """, (worker_user_id,))
+        
+        alltime_results = c.fetchall()
+        total_drops = sum(result['total_drops'] for result in alltime_results)
+        days_active = alltime_results[0]['days_active'] if alltime_results else 0
+        top_product = alltime_results[0]['product_type'] if alltime_results else "None"
+        
+        return {
+            'username': worker_info['username'],
+            'alias': worker_info['worker_alias'],
+            'status': worker_info['worker_status'],
+            'daily_quota': worker_info['worker_daily_quota'],
+            'worker_since': worker_since,
+            'today': {
+                'drops': drops_today,
+                'quota_progress': quota_progress,
+                'avg_per_hour': avg_per_hour
+            },
+            'month': {
+                'drops': month_drops,
+                'daily_avg': month_daily_avg,
+                'rank': rank,
+                'total_workers': len(ranking_results)
+            },
+            'alltime': {
+                'drops': total_drops,
+                'days_active': days_active,
+                'top_product': top_product
+            }
+        }
+        
+    except sqlite3.Error as e:
+        logger.error(f"Error fetching comprehensive worker data for {worker_user_id}: {e}")
+        return None
+    finally:
+        if conn: conn.close()
+
+# --- Message Handlers for New Features ---
+async def handle_adm_worker_quota_edit_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle quota edit message"""
+    admin_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    
+    if admin_id != ADMIN_ID or context.user_data.get('state') != 'awaiting_worker_quota_edit':
+        return
+    
+    try:
+        new_quota = int(update.message.text.strip())
+        if new_quota < 0 or new_quota > 100:
+            await send_message_with_retry(context.bot, chat_id, "❌ Invalid quota. Please enter a number between 0-100.", parse_mode=None)
+            return
+        
+        worker_id = context.user_data.get('editing_worker_id')
+        offset = context.user_data.get('editing_worker_offset', 0)
+        
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("UPDATE users SET worker_daily_quota = ? WHERE user_id = ?", (new_quota, worker_id))
+        conn.commit()
+        conn.close()
+        
+        context.user_data.pop('state', None)
+        context.user_data.pop('editing_worker_id', None)
+        context.user_data.pop('editing_worker_offset', None)
+        
+        await send_message_with_retry(context.bot, chat_id, f"✅ Daily quota updated to {new_quota} drops.",
+                                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Worker Profile", callback_data=f"adm_view_specific_worker|{worker_id}|{offset}")]]))
+        
+    except ValueError:
+        await send_message_with_retry(context.bot, chat_id, "❌ Invalid number. Please enter a valid quota (0-100).", parse_mode=None)
+
+async def handle_adm_worker_alias_edit_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle alias edit message"""
+    admin_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    
+    if admin_id != ADMIN_ID or context.user_data.get('state') != 'awaiting_worker_alias_edit':
+        return
+    
+    new_alias = update.message.text.strip()
+    if len(new_alias) > 20:
+        await send_message_with_retry(context.bot, chat_id, "❌ Alias too long. Maximum 20 characters.", parse_mode=None)
+        return
+    
+    worker_id = context.user_data.get('editing_worker_id')
+    offset = context.user_data.get('editing_worker_offset', 0)
+    
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("UPDATE users SET worker_alias = ? WHERE user_id = ?", (new_alias if new_alias else None, worker_id))
+    conn.commit()
+    conn.close()
+    
+    context.user_data.pop('state', None)
+    context.user_data.pop('editing_worker_id', None)
+    context.user_data.pop('editing_worker_offset', None)
+    
+    display_alias = new_alias if new_alias else "None"
+    await send_message_with_retry(context.bot, chat_id, f"✅ Worker alias updated to: {display_alias}",
+                                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Worker Profile", callback_data=f"adm_view_specific_worker|{worker_id}|{offset}")]]))
 
 # --- END OF FILE admin_workers.py ---

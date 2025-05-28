@@ -6,7 +6,7 @@ import os
 import signal
 import sqlite3 # Keep for error handling if needed directly
 from functools import wraps
-from datetime import timedelta
+from datetime import timedelta, datetime, timezone
 import threading # Added for Flask thread
 import json # Added for webhook processing
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
@@ -14,7 +14,7 @@ import hmac # For webhook signature verification
 import hashlib # For webhook signature verification
 
 # --- Telegram Imports ---
-from telegram import Update, BotCommand, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardMarkup
+from telegram import Update, BotCommand, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     Application, ApplicationBuilder, Defaults, ContextTypes,
     CommandHandler, CallbackQueryHandler, MessageHandler, filters,
@@ -38,7 +38,10 @@ from utils import (
     get_pending_deposit, remove_pending_deposit, FEE_ADJUSTMENT,
     send_message_with_retry,
     log_admin_action,
-    format_currency
+    format_currency,
+    MEDIA_DIR,
+    get_user_roles,  # NEW: Import for worker role checking
+    PRODUCT_TYPES    # NEW: Import for worker interface
 )
 import user # Import user module
 from user import (
@@ -66,6 +69,7 @@ from user import (
 import admin_product_management 
 import admin_features 
 import admin_workers # <<< NEW: Import admin_workers
+import worker_interface  # <<< NEW: Import worker interface
 
 # NEW: Import bulk stock management modules
 from bulk_stock_management import BulkStockManager
@@ -277,6 +281,21 @@ def callback_query_router(func):
                 "adm_view_specific_worker": admin_workers.handle_adm_view_specific_worker,
                 "adm_worker_toggle_status": admin_workers.handle_adm_worker_toggle_status,
                 "adm_worker_remove_confirm": admin_workers.handle_adm_worker_remove_confirm,
+                
+                # NEW: Enhanced Worker Management Callbacks
+                "adm_worker_analytics": admin_workers.handle_adm_worker_analytics,
+                "adm_worker_leaderboard": admin_workers.handle_adm_worker_leaderboard,
+                "adm_worker_settings": admin_workers.handle_adm_worker_settings,
+                "adm_view_specific_worker_enhanced": admin_workers.handle_adm_view_specific_worker_enhanced,
+                
+                # Worker Interface Callbacks (from worker_interface.py)
+                "worker_admin_menu": worker_interface.handle_worker_admin_menu,
+                "worker_add_products": worker_interface.handle_worker_add_products,
+                "worker_city": worker_interface.handle_worker_city_selection,
+                "worker_district": worker_interface.handle_worker_district_selection,
+                "worker_type": worker_interface.handle_worker_type_selection,
+                "worker_view_stats": worker_interface.handle_worker_view_stats,
+                "worker_leaderboard": worker_interface.handle_worker_leaderboard,
                 # === Worker Management Callbacks END ===
 
                 # NEW: Bulk Stock Management Handlers (from admin_bulk_stock.py)
@@ -312,8 +331,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Handle /commands
         if text.startswith('/admin'):
-            if user_id in [ADMIN_ID] + SECONDARY_ADMIN_IDS:
+            # Check user roles for admin access
+            user_roles = get_user_roles(user_id)
+            
+            if user_roles['is_primary'] or user_roles['is_secondary']:
+                # Full admin access
                 await admin_product_management.handle_admin_menu(update, context)
+            elif user_roles['is_worker']:
+                # Limited worker access
+                await worker_interface.handle_worker_admin_menu(update, context)
             else:
                 await update.message.reply_text("Access denied.")
             return
@@ -325,6 +351,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         elif text.startswith('/start'):
             await user.start(update, context)
+            return
+
+        # NEW: Handle worker product addition messages
+        user_roles = get_user_roles(user_id)
+        if user_roles['is_worker'] and context.user_data.get('worker_state') == 'awaiting_product_details':
+            await handle_worker_product_message(update, context)
             return
 
         # NEW: Handle bulk stock management text input
@@ -771,6 +803,198 @@ def telegram_webhook():
     except Exception as e:
         logger.error(f"Error processing Telegram webhook: {e}", exc_info=True)
         return Response("Internal Server Error", status=500)
+
+# --- Worker Product Addition Handler ---
+async def handle_worker_product_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle worker product addition messages"""
+    user_id = update.effective_user.id
+    
+    # Verify worker permissions
+    user_roles = get_user_roles(user_id)
+    if not user_roles['is_worker']:
+        await update.message.reply_text("❌ Access denied. Worker permissions required.")
+        return
+    
+    # Get worker selections from context
+    city_name = context.user_data.get('worker_selected_city_name')
+    district_name = context.user_data.get('worker_selected_district_name')
+    product_type = context.user_data.get('worker_selected_type')
+    
+    if not all([city_name, district_name, product_type]):
+        await update.message.reply_text("❌ Selection data lost. Please start again.")
+        context.user_data.pop('worker_state', None)
+        await worker_interface.handle_worker_admin_menu(update, context)
+        return
+    
+    # Extract product details from message
+    text = update.message.text or ""
+    
+    # Try to extract size and price from text
+    size = None
+    price = None
+    
+    # Look for size patterns
+    import re
+    size_match = re.search(r'size[:\s]*([0-9.]+\s*[a-zA-Z]*)', text, re.IGNORECASE)
+    if size_match:
+        size = size_match.group(1).strip()
+    
+    # Look for price patterns
+    price_match = re.search(r'price[:\s]*([0-9.]+)', text, re.IGNORECASE)
+    if price_match:
+        try:
+            price = float(price_match.group(1))
+        except ValueError:
+            pass
+    
+    # If size or price not found, ask for clarification
+    if not size or price is None:
+        msg = "❌ Could not extract size and price from your message.\n\n"
+        msg += "Please include both size and price in your message:\n"
+        msg += "• Size: 1g\n"
+        msg += "• Price: 25.00\n\n"
+        msg += "Example message:\n"
+        msg += "Size: 1g\nPrice: 25.00\nHigh quality product"
+        
+        keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="worker_admin_menu")]]
+        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+    
+    # Process media if present
+    media_info = []
+    if update.message.photo:
+        photo = update.message.photo[-1]  # Get highest resolution
+        media_info.append({'type': 'photo', 'file_id': photo.file_id})
+    elif update.message.video:
+        media_info.append({'type': 'video', 'file_id': update.message.video.file_id})
+    elif update.message.animation:
+        media_info.append({'type': 'gif', 'file_id': update.message.animation.file_id})
+    
+    # Create product name
+    import time
+    product_name = f"{product_type} {size} {int(time.time())}"
+    
+    # Add product to database
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("BEGIN")
+        
+        # Insert product
+        insert_params = (
+            city_name, district_name, product_type, size, product_name, price, text,
+            user_id,  # Worker ID as added_by
+            datetime.now(timezone.utc).isoformat()
+        )
+        
+        c.execute("""INSERT INTO products
+                        (city, district, product_type, size, name, price, available, reserved, original_text, added_by, added_date)
+                     VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?)""", insert_params)
+        
+        product_id = c.lastrowid
+        
+        # Handle media if present
+        if media_info and product_id:
+            import os
+            import shutil
+            import asyncio
+            from utils import MEDIA_DIR
+            
+            # Create media directory for product
+            final_media_dir = os.path.join(MEDIA_DIR, str(product_id))
+            await asyncio.to_thread(os.makedirs, final_media_dir, exist_ok=True)
+            
+            for i, media in enumerate(media_info):
+                try:
+                    file_obj = await context.bot.get_file(media['file_id'])
+                    file_extension = ".jpg" if media['type'] == "photo" else ".mp4" if media['type'] in ["video", "gif"] else ".dat"
+                    filename = f"media_{i}{file_extension}"
+                    file_path = os.path.join(final_media_dir, filename)
+                    
+                    await file_obj.download_to_drive(custom_path=file_path)
+                    
+                    # Insert media record
+                    c.execute("""INSERT INTO product_media (product_id, media_type, file_path, telegram_file_id) 
+                                VALUES (?, ?, ?, ?)""", (product_id, media['type'], file_path, media['file_id']))
+                    
+                except Exception as e:
+                    logger.error(f"Error downloading worker media: {e}")
+        
+        conn.commit()
+        
+        # Get today's statistics for feedback
+        today = datetime.now().strftime('%Y-%m-%d')
+        c.execute("""
+            SELECT COUNT(*) as today_drops
+            FROM products
+            WHERE added_by = ? AND DATE(added_date) = ?
+        """, (user_id, today))
+        
+        today_result = c.fetchone()
+        today_drops = today_result['today_drops'] if today_result else 0
+        
+        # Get worker quota
+        c.execute("SELECT worker_daily_quota FROM users WHERE user_id = ?", (user_id,))
+        quota_result = c.fetchone()
+        daily_quota = quota_result['worker_daily_quota'] if quota_result else 10
+        
+        conn.close()
+        
+        # Clear worker state
+        context.user_data.pop('worker_state', None)
+        context.user_data.pop('worker_selected_city', None)
+        context.user_data.pop('worker_selected_city_name', None)
+        context.user_data.pop('worker_selected_district', None)
+        context.user_data.pop('worker_selected_district_name', None)
+        context.user_data.pop('worker_selected_type', None)
+        
+        # Send success message with progress
+        username = update.effective_user.username or f"ID_{user_id}"
+        progress_bar = worker_interface._generate_progress_bar((today_drops / daily_quota) * 100)
+        
+        msg = f"✅ **Product Added Successfully!**\n\n"
+        msg += f"📦 **Product Details:**\n"
+        msg += f"• Location: {city_name} / {district_name}\n"
+        msg += f"• Type: {PRODUCT_TYPES.get(product_type, '❓')} {product_type}\n"
+        msg += f"• Size: {size}\n"
+        msg += f"• Price: {price:.2f} EUR\n"
+        msg += f"• Product ID: #{product_id}\n\n"
+        
+        msg += f"📊 **Today's Progress:**\n"
+        msg += f"• Drops Added Today: {today_drops}\n"
+        msg += f"• Daily Quota: {daily_quota}\n"
+        msg += f"• Progress: {progress_bar} {(today_drops/daily_quota*100):.1f}%\n\n"
+        
+        if today_drops >= daily_quota:
+            msg += "🎉 **Daily quota completed! Excellent work!**\n\n"
+        else:
+            remaining = daily_quota - today_drops
+            msg += f"🎯 {remaining} more drops to reach your quota!\n\n"
+        
+        if len(media_info) > 0:
+            msg += f"📸 {len(media_info)} media file(s) attached\n\n"
+        
+        msg += "What would you like to do next?"
+        
+        keyboard = [
+            [InlineKeyboardButton("➕ Add Another Product", callback_data="worker_add_products")],
+            [InlineKeyboardButton("📊 View My Stats", callback_data="worker_view_stats")],
+            [InlineKeyboardButton("🏠 Worker Panel", callback_data="worker_admin_menu")]
+        ]
+        
+        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        
+        logger.info(f"Worker {username} (ID: {user_id}) added product: {product_name} (ID: {product_id})")
+        
+    except Exception as e:
+        logger.error(f"Error adding worker product: {e}", exc_info=True)
+        if conn and conn.in_transaction:
+            conn.rollback()
+        if conn:
+            conn.close()
+            
+        await update.message.reply_text("❌ Error adding product. Please try again or contact admin.",
+                                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Worker Panel", callback_data="worker_admin_menu")]]))
 
 def main() -> None:
     global telegram_app, main_loop

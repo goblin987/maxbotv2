@@ -418,6 +418,7 @@ async def handle_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         [InlineKeyboardButton("📦➕ Bulk Add Products", callback_data="adm_bulk_start_setup")], 
         [InlineKeyboardButton("🗑️ Manage Products", callback_data="adm_manage_products")],
         [InlineKeyboardButton("👥 Manage Users", callback_data="adm_manage_users|0")],
+        [InlineKeyboardButton("👷 Manage Workers", callback_data="manage_workers_menu")],  # NEW: Worker Management
         [InlineKeyboardButton("👑 Manage Resellers", callback_data="manage_resellers_menu")],
         [InlineKeyboardButton("🏷️ Manage Reseller Discounts", callback_data="manage_reseller_discounts_select_reseller|0")],
         [InlineKeyboardButton("🏷️ Manage Discount Codes", callback_data="adm_manage_discounts")],
