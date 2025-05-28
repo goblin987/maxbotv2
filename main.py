@@ -1000,6 +1000,14 @@ def main() -> None:
     global telegram_app, main_loop
     logger.info("Starting bot...")
     init_db()
+    
+    # NEW: Initialize bulk stock tables
+    try:
+        BulkStockManager.init_bulk_stock_tables()
+        logger.info("Bulk stock tables initialized successfully")
+    except Exception as e:
+        logger.error(f"Error initializing bulk stock tables: {e}")
+    
     load_all_data()
     defaults = Defaults(parse_mode=None, block=False)
     app_builder = ApplicationBuilder().token(TOKEN).defaults(defaults).job_queue(JobQueue())
