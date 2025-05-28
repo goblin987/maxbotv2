@@ -686,6 +686,31 @@ def nowpayments_webhook():
          logger.info(f"Webhook received for payment {payment_id} with status: {status} (ignored).")
     return Response(status=200)
 
+async def debug_process_update(update: Update):
+    """Custom update processor with detailed debugging"""
+    global telegram_app
+    
+    try:
+        logger.info(f"CUSTOM_PROCESS: Starting to process update {update.update_id}")
+        
+        if update.message:
+            logger.info(f"CUSTOM_PROCESS: Update {update.update_id} has message: '{update.message.text}'")
+            logger.info(f"CUSTOM_PROCESS: Message chat: {update.message.chat}")
+            logger.info(f"CUSTOM_PROCESS: Message from: {update.message.from_user}")
+            logger.info(f"CUSTOM_PROCESS: Message entities: {update.message.entities}")
+            
+        # Check if this should match our CommandHandler
+        if update.message and update.message.text and update.message.text.startswith('/start'):
+            logger.info(f"CUSTOM_PROCESS: This should match our /start CommandHandler!")
+            
+        # Process the update through the normal pipeline
+        logger.info(f"CUSTOM_PROCESS: About to call telegram_app.process_update")
+        await telegram_app.process_update(update)
+        logger.info(f"CUSTOM_PROCESS: Completed telegram_app.process_update for {update.update_id}")
+        
+    except Exception as e:
+        logger.error(f"CUSTOM_PROCESS: Error in custom process_update: {e}", exc_info=True)
+
 @flask_app.route(f"/telegram/{TOKEN}", methods=['POST'])
 def telegram_webhook():
     global telegram_app, main_loop
@@ -708,9 +733,9 @@ def telegram_webhook():
         logger.info(f"DEBUG: main_loop is running: {main_loop.is_running()}")
         logger.info(f"DEBUG: telegram_app initialized: {telegram_app is not None}")
         
-        # Schedule the update processing directly
+        # Schedule our custom update processing
         try:
-            future = asyncio.run_coroutine_threadsafe(telegram_app.process_update(update), main_loop)
+            future = asyncio.run_coroutine_threadsafe(debug_process_update(update), main_loop)
             logger.info(f"DEBUG: Update {update.update_id if update else 'None'} scheduled successfully with future: {future}")
             
             # Try to get the result with a very short timeout to see if it completes quickly
@@ -779,6 +804,49 @@ async def debug_start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception as reply_error:
             logger.error(f"DEBUG: Failed to send error reply: {reply_error}")
 
+async def process_update_with_debug(self, update: Update, check_result: object = None) -> None:
+    """Wrapper for Application.process_update with detailed debugging"""
+    logger.info(f"WRAPPER: process_update_with_debug called for update {update.update_id}")
+    
+    # Check what handlers we have registered
+    logger.info(f"WRAPPER: Application has {len(self.handlers)} handler groups")
+    for group_num, handlers in self.handlers.items():
+        logger.info(f"WRAPPER: Group {group_num} has {len(handlers)} handlers")
+        for i, handler in enumerate(handlers):
+            logger.info(f"WRAPPER:   Handler {i}: {type(handler).__name__}")
+            if hasattr(handler, 'command') and handler.command:
+                logger.info(f"WRAPPER:     Command(s): {handler.command}")
+    
+    # Check if the update should match any CommandHandler
+    if update.message and update.message.text:
+        text = update.message.text
+        logger.info(f"WRAPPER: Message text: '{text}'")
+        
+        if text.startswith('/'):
+            command_parts = text.split()
+            command = command_parts[0][1:]  # Remove the '/'
+            logger.info(f"WRAPPER: Extracted command: '{command}'")
+            
+            # Check each CommandHandler to see if it should match
+            for group_num, handlers in self.handlers.items():
+                for i, handler in enumerate(handlers):
+                    if hasattr(handler, 'command') and handler.command:
+                        logger.info(f"WRAPPER: Checking handler {i} with command(s): {handler.command}")
+                        if isinstance(handler.command, list):
+                            should_match = command in handler.command
+                        else:
+                            should_match = command == handler.command
+                        logger.info(f"WRAPPER: Should match: {should_match}")
+    
+    # Call the original process_update method
+    logger.info(f"WRAPPER: About to call original process_update for {update.update_id}")
+    try:
+        await self._original_process_update(update, check_result)
+        logger.info(f"WRAPPER: Original process_update completed for {update.update_id}")
+    except Exception as e:
+        logger.error(f"WRAPPER: Error in original process_update for {update.update_id}: {e}", exc_info=True)
+        raise
+
 def main() -> None:
     global telegram_app, main_loop
     logger.info("Starting bot...")
@@ -790,6 +858,11 @@ def main() -> None:
     app_builder.post_shutdown(post_shutdown)
     application = app_builder.build()
 
+    # Monkey patch the process_update method to add debugging
+    logger.info("Adding debug wrapper to Application.process_update...")
+    application._original_process_update = application.process_update
+    application.process_update = process_update_with_debug.__get__(application, type(application))
+    
     logger.info("Registering handlers...")
     # Use simple handler first to test basic functionality
     start_handler = CommandHandler("start", simple_start_handler)
