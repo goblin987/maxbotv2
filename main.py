@@ -696,7 +696,23 @@ def telegram_webhook():
         update_data = request.get_json(force=True)
         logger.info(f"Telegram webhook received update: {update_data}")
         update = Update.de_json(update_data, telegram_app.bot)
-        asyncio.run_coroutine_threadsafe(telegram_app.process_update(update), main_loop)
+        
+        # Debug logging for update content
+        if update and update.message:
+            logger.info(f"DEBUG: Update {update.update_id} contains message: '{update.message.text}' from user {update.effective_user.id}")
+            if update.message.text and update.message.text.startswith('/'):
+                logger.info(f"DEBUG: Command detected: '{update.message.text}'")
+        
+        # Process the update
+        future = asyncio.run_coroutine_threadsafe(telegram_app.process_update(update), main_loop)
+        try:
+            result = future.result(timeout=10)  # Add timeout to see if processing hangs
+            logger.info(f"DEBUG: Update processing completed for update {update.update_id if update else 'None'}")
+        except asyncio.TimeoutError:
+            logger.error(f"DEBUG: Update processing timed out for update {update.update_id if update else 'None'}")
+        except Exception as process_error:
+            logger.error(f"DEBUG: Error during update processing: {process_error}", exc_info=True)
+        
         logger.info(f"Successfully processed update: {update.update_id if update else 'None'}")
         return Response(status=200)
     except json.JSONDecodeError:
@@ -705,6 +721,15 @@ def telegram_webhook():
     except Exception as e:
         logger.error(f"Error processing Telegram webhook: {e}", exc_info=True)
         return Response("Internal Server Error", status=500)
+
+async def simple_start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Simple test start handler"""
+    logger.info(f"SIMPLE START: Command received from user {update.effective_user.id}")
+    try:
+        await update.message.reply_text("Bot is working! This is a test response.")
+        logger.info(f"SIMPLE START: Successfully sent test message to user {update.effective_user.id}")
+    except Exception as e:
+        logger.error(f"SIMPLE START: Error sending test message: {e}", exc_info=True)
 
 async def debug_start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Debug wrapper for start handler"""
@@ -731,7 +756,8 @@ def main() -> None:
     application = app_builder.build()
 
     logger.info("Registering handlers...")
-    application.add_handler(CommandHandler("start", debug_start_handler)) 
+    # Use simple handler first to test basic functionality
+    application.add_handler(CommandHandler("start", simple_start_handler)) 
     logger.info("Registered start command handler")
     application.add_handler(CommandHandler("admin", admin_product_management.handle_admin_menu)) 
     application.add_handler(CommandHandler("done_bulk", admin_product_management.handle_done_bulk_command))
