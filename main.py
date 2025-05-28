@@ -832,8 +832,27 @@ def main() -> None:
         logger.info("Telegram bot initialized and webhook configured")
         logger.info(f"DEBUG: Bot info: {await telegram_app.bot.get_me()}")
         
-        # Flask server (blocking call)
-        flask_app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False, use_reloader=False)
+        # Run Flask in a separate thread so it doesn't block the event loop
+        flask_thread = threading.Thread(
+            target=flask_app.run,
+            kwargs={
+                'host': '0.0.0.0',
+                'port': int(os.environ.get('PORT', 5000)),
+                'debug': False,
+                'use_reloader': False,
+                'threaded': True
+            },
+            daemon=True
+        )
+        flask_thread.start()
+        logger.info("Flask server started in background thread")
+        
+        # Keep the main event loop running
+        try:
+            while True:
+                await asyncio.sleep(1)
+        except (KeyboardInterrupt, SystemExit):
+            logger.info("Shutdown signal received")
 
     async def shutdown(signal, loop, application):
         logger.info(f"Received exit signal {signal.name}...")
