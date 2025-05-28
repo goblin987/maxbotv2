@@ -713,6 +713,11 @@ async def debug_process_update(update: Update):
     except Exception as e:
         logger.error(f"CUSTOM_PROCESS: Error in custom process_update: {e}", exc_info=True)
 
+async def simple_test_async():
+    """Simple test to see if async execution works"""
+    logger.info("SIMPLE_TEST_ASYNC: This function was called successfully!")
+    return "test_success"
+
 @flask_app.route(f"/telegram/{TOKEN}", methods=['POST'])
 def telegram_webhook():
     global telegram_app, main_loop
@@ -729,6 +734,21 @@ def telegram_webhook():
             logger.info(f"DEBUG: Update {update.update_id} contains message: '{update.message.text}' from user {update.effective_user.id}")
             if update.message.text and update.message.text.startswith('/'):
                 logger.info(f"DEBUG: Command detected: '{update.message.text}'")
+        
+        # FIRST: Test if we can run ANY async function
+        logger.info(f"TEST: About to test simple async execution")
+        try:
+            test_future = asyncio.run_coroutine_threadsafe(simple_test_async(), main_loop)
+            logger.info(f"TEST: Simple async scheduled successfully")
+            try:
+                result = test_future.result(timeout=1.0)
+                logger.info(f"TEST: Simple async completed with result: {result}")
+            except asyncio.TimeoutError:
+                logger.error(f"TEST: Simple async timed out!")
+            except Exception as test_e:
+                logger.error(f"TEST: Simple async failed: {test_e}", exc_info=True)
+        except Exception as schedule_test_e:
+            logger.error(f"TEST: Failed to schedule simple async: {schedule_test_e}", exc_info=True)
         
         # Process the update asynchronously without waiting
         logger.info(f"DEBUG: Scheduling update {update.update_id if update else 'None'} for processing")
