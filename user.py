@@ -210,86 +210,101 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_callback = update.callback_query is not None
     user_id = user.id
     username = user.username or user.first_name or f"User_{user_id}"
+    
+    logger.info(f"Start handler called for user {user_id} ({username}), is_callback: {is_callback}")
 
-    # Send Bot Media (Only on direct /start, not callbacks)
-    if not is_callback and BOT_MEDIA.get("type") and BOT_MEDIA.get("path"):
-        media_path = BOT_MEDIA["path"]
-        media_type = BOT_MEDIA["type"]
-        logger.info(f"Attempting to send BOT_MEDIA: type={media_type}, path={media_path}")
+    try:
+        # Send Bot Media (Only on direct /start, not callbacks)
+        if not is_callback and BOT_MEDIA.get("type") and BOT_MEDIA.get("path"):
+            media_path = BOT_MEDIA["path"]
+            media_type = BOT_MEDIA["type"]
+            logger.info(f"Attempting to send BOT_MEDIA: type={media_type}, path={media_path}")
 
-        # Check if file exists using asyncio.to_thread
-        if await asyncio.to_thread(os.path.exists, media_path):
+            # Check if file exists using asyncio.to_thread
+            if await asyncio.to_thread(os.path.exists, media_path):
+                try:
+                    # Pass the file path directly to the send_* methods
+                    if media_type == "photo":
+                        await context.bot.send_photo(chat_id=chat_id, photo=media_path)
+                    elif media_type == "video":
+                        await context.bot.send_video(chat_id=chat_id, video=media_path)
+                    elif media_type == "gif":
+                        await context.bot.send_animation(chat_id=chat_id, animation=media_path)
+                    else:
+                        logger.warning(f"Unsupported BOT_MEDIA type for sending: {media_type}")
+
+                except telegram_error.TelegramError as e:
+                    logger.error(f"Error sending BOT_MEDIA ({media_path}): {e}", exc_info=True)
+                except Exception as e:
+                    logger.error(f"Unexpected error sending BOT_MEDIA ({media_path}): {e}", exc_info=True)
+            else:
+                logger.warning(f"BOT_MEDIA path {media_path} not found on disk when trying to send.")
+
+
+        # Ensure user exists and language context is set
+        lang = context.user_data.get("lang", None)
+        if lang is None:
+            conn = None
             try:
-                # Pass the file path directly to the send_* methods
-                if media_type == "photo":
-                    await context.bot.send_photo(chat_id=chat_id, photo=media_path)
-                elif media_type == "video":
-                    await context.bot.send_video(chat_id=chat_id, video=media_path)
-                elif media_type == "gif":
-                    await context.bot.send_animation(chat_id=chat_id, animation=media_path)
-                else:
-                    logger.warning(f"Unsupported BOT_MEDIA type for sending: {media_type}")
-
-            except telegram_error.TelegramError as e:
-                logger.error(f"Error sending BOT_MEDIA ({media_path}): {e}", exc_info=True)
-            except Exception as e:
-                logger.error(f"Unexpected error sending BOT_MEDIA ({media_path}): {e}", exc_info=True)
+                conn = get_db_connection()
+                c = conn.cursor()
+                # Ensure user exists
+                c.execute("""
+                    INSERT INTO users (user_id, username, language, is_reseller) VALUES (?, ?, 'en', 0)
+                    ON CONFLICT(user_id) DO UPDATE SET username=excluded.username
+                """, (user_id, username))
+                # Get language
+                c.execute("SELECT language FROM users WHERE user_id = ?", (user_id,))
+                result = c.fetchone()
+                db_lang = result['language'] if result else 'en'
+                try: from utils import LANGUAGES as UTILS_LANGUAGES_START
+                except ImportError: UTILS_LANGUAGES_START = {'en': {}}
+                lang = db_lang if db_lang and db_lang in UTILS_LANGUAGES_START else 'en'
+                conn.commit()
+                context.user_data["lang"] = lang
+                logger.info(f"start: Set language for user {user_id} to '{lang}' from DB/default.")
+            except sqlite3.Error as e:
+                logger.error(f"DB error ensuring user/language in start for {user_id}: {e}")
+                lang = 'en'
+                context.user_data["lang"] = lang
+                logger.warning(f"start: Defaulted language to 'en' for user {user_id} due to DB error.")
+            finally:
+                if conn: conn.close()
         else:
-            logger.warning(f"BOT_MEDIA path {media_path} not found on disk when trying to send.")
+            logger.info(f"start: Using existing language '{lang}' from context for user {user_id}.")
 
+        # Build and Send/Edit Menu
+        lang, lang_data = _get_lang_data(context)
+        full_welcome, reply_markup = _build_start_menu_content(user_id, username, lang_data, context)
+        
+        logger.info(f"Built start menu for user {user_id}, sending message...")
 
-    # Ensure user exists and language context is set
-    lang = context.user_data.get("lang", None)
-    if lang is None:
-        conn = None
+        if is_callback:
+            query = update.callback_query
+            try:
+                 if query.message and (query.message.text != full_welcome or query.message.reply_markup != reply_markup):
+                      await query.edit_message_text(full_welcome, reply_markup=reply_markup, parse_mode=None)
+                 elif query: await query.answer()
+            except telegram_error.BadRequest as e:
+                  if "message is not modified" not in str(e).lower():
+                      logger.warning(f"Failed to edit start message (callback): {e}. Sending new.")
+                      await send_message_with_retry(context.bot, chat_id, full_welcome, reply_markup=reply_markup, parse_mode=None)
+                  elif query: await query.answer()
+            except Exception as e:
+                 logger.error(f"Unexpected error editing start message (callback): {e}", exc_info=True)
+                 await send_message_with_retry(context.bot, chat_id, full_welcome, reply_markup=reply_markup, parse_mode=None)
+        else:
+            await send_message_with_retry(context.bot, chat_id, full_welcome, reply_markup=reply_markup, parse_mode=None)
+            
+        logger.info(f"Successfully sent start message to user {user_id}")
+        
+    except Exception as e:
+        logger.error(f"Critical error in start handler for user {user_id}: {e}", exc_info=True)
+        # Try to send a basic error message
         try:
-            conn = get_db_connection()
-            c = conn.cursor()
-            # Ensure user exists
-            c.execute("""
-                INSERT INTO users (user_id, username, language, is_reseller) VALUES (?, ?, 'en', 0)
-                ON CONFLICT(user_id) DO UPDATE SET username=excluded.username
-            """, (user_id, username))
-            # Get language
-            c.execute("SELECT language FROM users WHERE user_id = ?", (user_id,))
-            result = c.fetchone()
-            db_lang = result['language'] if result else 'en'
-            try: from utils import LANGUAGES as UTILS_LANGUAGES_START
-            except ImportError: UTILS_LANGUAGES_START = {'en': {}}
-            lang = db_lang if db_lang and db_lang in UTILS_LANGUAGES_START else 'en'
-            conn.commit()
-            context.user_data["lang"] = lang
-            logger.info(f"start: Set language for user {user_id} to '{lang}' from DB/default.")
-        except sqlite3.Error as e:
-            logger.error(f"DB error ensuring user/language in start for {user_id}: {e}")
-            lang = 'en'
-            context.user_data["lang"] = lang
-            logger.warning(f"start: Defaulted language to 'en' for user {user_id} due to DB error.")
-        finally:
-            if conn: conn.close()
-    else:
-        logger.info(f"start: Using existing language '{lang}' from context for user {user_id}.")
-
-    # Build and Send/Edit Menu
-    lang, lang_data = _get_lang_data(context)
-    full_welcome, reply_markup = _build_start_menu_content(user_id, username, lang_data, context)
-
-    if is_callback:
-        query = update.callback_query
-        try:
-             if query.message and (query.message.text != full_welcome or query.message.reply_markup != reply_markup):
-                  await query.edit_message_text(full_welcome, reply_markup=reply_markup, parse_mode=None)
-             elif query: await query.answer()
-        except telegram_error.BadRequest as e:
-              if "message is not modified" not in str(e).lower():
-                  logger.warning(f"Failed to edit start message (callback): {e}. Sending new.")
-                  await send_message_with_retry(context.bot, chat_id, full_welcome, reply_markup=reply_markup, parse_mode=None)
-              elif query: await query.answer()
-        except Exception as e:
-             logger.error(f"Unexpected error editing start message (callback): {e}", exc_info=True)
-             await send_message_with_retry(context.bot, chat_id, full_welcome, reply_markup=reply_markup, parse_mode=None)
-    else:
-        await send_message_with_retry(context.bot, chat_id, full_welcome, reply_markup=reply_markup, parse_mode=None)
+            await send_message_with_retry(context.bot, chat_id, "❌ An error occurred. Please try again later.", parse_mode=None)
+        except:
+            pass
 
 
 # --- Other handlers ---

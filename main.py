@@ -681,15 +681,17 @@ def nowpayments_webhook():
     return Response(status=200)
 
 @flask_app.route(f"/telegram/{TOKEN}", methods=['POST'])
-async def telegram_webhook():
+def telegram_webhook():
     global telegram_app, main_loop
     if not telegram_app or not main_loop:
         logger.error("Telegram webhook received but app/loop not ready.")
         return Response(status=503)
     try:
         update_data = request.get_json(force=True)
+        logger.info(f"Telegram webhook received update: {update_data}")
         update = Update.de_json(update_data, telegram_app.bot)
         asyncio.run_coroutine_threadsafe(telegram_app.process_update(update), main_loop)
+        logger.info(f"Successfully processed update: {update.update_id if update else 'None'}")
         return Response(status=200)
     except json.JSONDecodeError:
         logger.error("Telegram webhook received invalid JSON.")
