@@ -306,13 +306,15 @@ def callback_query_router(func):
                 # Enhanced Worker Interface Callbacks (from worker_interface.py)
                 "worker_admin_menu": worker_interface.handle_worker_admin_menu,
                 "worker_select_category": worker_interface.handle_worker_select_category,
-                "worker_select_type": worker_interface.handle_worker_select_type,
-                "worker_select_city": worker_interface.handle_worker_select_city,
-                "worker_select_district": worker_interface.handle_worker_select_district,
+                "worker_category_chosen": worker_interface.handle_worker_category_chosen,
+                "worker_add_single": worker_interface.handle_worker_add_single,
+                "worker_add_bulk": worker_interface.handle_worker_add_bulk,
+                "worker_single_city": worker_interface.handle_worker_single_city,
+                "worker_single_district": worker_interface.handle_worker_single_district,
                 "worker_bulk_city": worker_interface.handle_worker_bulk_city,
                 "worker_bulk_district": worker_interface.handle_worker_bulk_district,
                 "worker_bulk_finish": worker_interface.handle_worker_bulk_finish,
-                "worker_confirm_single": worker_interface.handle_worker_confirm_single_product,
+                "worker_confirm_single_product": worker_interface.handle_worker_confirm_single_product,
                 "worker_bulk_forwarded_drops": worker_interface.handle_worker_bulk_forwarded_drops,
                 
                 # Removed old worker handlers:
