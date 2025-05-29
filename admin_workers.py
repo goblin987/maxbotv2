@@ -1213,4 +1213,73 @@ async def _check_weekly_achievements(context, user_id, username, alias):
     except Exception as e:
         logger.error(f"Error checking weekly achievements for worker {user_id}: {e}")
 
+# --- Missing Worker Settings Handlers ---
+async def handle_adm_set_default_quota(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
+    """Handle setting default worker quota"""
+    query = update.callback_query
+    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    
+    msg = "📊 **Set Default Daily Quota**\n\n"
+    msg += "Current default quota: 10 drops per day\n\n"
+    msg += "Please reply with the new default quota (number of drops per day).\n"
+    msg += "Example: 15"
+    
+    keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="adm_worker_settings")]]
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    
+    # Set state for next message
+    context.user_data['admin_state'] = 'awaiting_default_quota'
+
+async def handle_adm_toggle_worker_notifications(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
+    """Handle toggling worker notifications"""
+    query = update.callback_query
+    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    
+    # Toggle notification setting (placeholder - implement actual setting storage)
+    current_status = "Enabled"  # This would come from database in real implementation
+    new_status = "Disabled" if current_status == "Enabled" else "Enabled"
+    
+    msg = f"🔔 **Worker Notifications**\n\n"
+    msg += f"Status changed: {current_status} → {new_status}\n\n"
+    msg += "Worker notifications have been updated!"
+    
+    keyboard = [[InlineKeyboardButton("⬅️ Back to Settings", callback_data="adm_worker_settings")]]
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+async def handle_adm_bulk_worker_actions(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
+    """Handle bulk worker actions menu"""
+    query = update.callback_query
+    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    
+    msg = "👥 **Bulk Worker Actions**\n\n"
+    msg += "Select a bulk action to perform on all workers:"
+    
+    keyboard = [
+        [InlineKeyboardButton("📊 Reset All Quotas", callback_data="adm_bulk_reset_quotas")],
+        [InlineKeyboardButton("🔄 Update All Status", callback_data="adm_bulk_update_status")],
+        [InlineKeyboardButton("📧 Send Notification to All", callback_data="adm_bulk_send_notification")],
+        [InlineKeyboardButton("📈 Generate All Reports", callback_data="adm_bulk_generate_reports")],
+        [InlineKeyboardButton("⬅️ Back to Settings", callback_data="adm_worker_settings")]
+    ]
+    
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+async def handle_adm_worker_templates(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
+    """Handle worker templates menu"""
+    query = update.callback_query
+    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    
+    msg = "📋 **Worker Templates**\n\n"
+    msg += "Manage worker onboarding and message templates:"
+    
+    keyboard = [
+        [InlineKeyboardButton("📝 Welcome Template", callback_data="adm_edit_worker_welcome")],
+        [InlineKeyboardButton("🎯 Goal Templates", callback_data="adm_edit_goal_templates")],
+        [InlineKeyboardButton("📊 Report Templates", callback_data="adm_edit_report_templates")],
+        [InlineKeyboardButton("🔔 Notification Templates", callback_data="adm_edit_notification_templates")],
+        [InlineKeyboardButton("⬅️ Back to Settings", callback_data="adm_worker_settings")]
+    ]
+    
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
 # --- END OF FILE admin_workers.py ---

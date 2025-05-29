@@ -293,6 +293,12 @@ def callback_query_router(func):
                 "adm_worker_edit_quota": admin_workers.handle_adm_worker_edit_quota,
                 "adm_export_performance_summary": admin_workers.handle_adm_export_performance_summary,
                 
+                # NEW: Worker Settings Handlers
+                "adm_set_default_quota": admin_workers.handle_adm_set_default_quota,
+                "adm_toggle_worker_notifications": admin_workers.handle_adm_toggle_worker_notifications,
+                "adm_bulk_worker_actions": admin_workers.handle_adm_bulk_worker_actions,
+                "adm_worker_templates": admin_workers.handle_adm_worker_templates,
+                
                 # Enhanced Worker Interface Callbacks (from worker_interface.py)
                 "worker_admin_menu": worker_interface.handle_worker_admin_menu,
                 "worker_add_products": worker_interface.handle_worker_add_products,
@@ -374,9 +380,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if user_id in [ADMIN_ID] + SECONDARY_ADMIN_IDS:
             await AdminBulkStockMessageHandlers.handle_bulk_stock_text_input(update, context)
             await handle_bulk_stock_message_updates(update, context)
-        
-        # Admin Features Message Handling
-        await admin_features.handle_admin_message(update, context)
         
         # Admin Workers Message Handling
         await admin_workers.handle_admin_worker_message(update, context)
