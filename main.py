@@ -291,11 +291,7 @@ def callback_query_router(func):
                 # NEW: Advanced Worker Management Features
                 "adm_worker_edit_alias": admin_workers.handle_adm_worker_edit_alias,
                 "adm_worker_edit_quota": admin_workers.handle_adm_worker_edit_quota,
-                "adm_worker_export_data": admin_workers.handle_adm_worker_export_data,
                 "adm_export_performance_summary": admin_workers.handle_adm_export_performance_summary,
-                "adm_export_revenue_analysis": admin_workers.handle_adm_export_revenue_analysis,
-                "adm_worker_time_analytics": admin_workers.handle_adm_worker_time_analytics,
-                "adm_export_time_analysis": admin_workers.handle_adm_export_time_analysis,
                 
                 # Enhanced Worker Interface Callbacks (from worker_interface.py)
                 "worker_admin_menu": worker_interface.handle_worker_admin_menu,
@@ -518,10 +514,10 @@ async def worker_achievements_notification_job_wrapper(context: ContextTypes.DEF
     """Background job to check worker achievements and send notifications"""
     logger.debug("Running background job: worker_achievements_notification_job")
     try:
-        # Import the function from admin_workers
-        from admin_workers import check_worker_achievements_and_notify
-        await check_worker_achievements_and_notify(context)
-        logger.info("Worker achievements notification job completed successfully")
+        # TODO: Import the function from admin_workers when implemented
+        # from admin_workers import check_worker_achievements_and_notify
+        # await check_worker_achievements_and_notify(context)
+        logger.info("Worker achievements notification job - function not implemented yet")
     except Exception as e:
         logger.error(f"Error in background job worker_achievements_notification_job: {e}", exc_info=True)
 
