@@ -12,6 +12,7 @@ import json # Added for webhook processing
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 import hmac # For webhook signature verification
 import hashlib # For webhook signature verification
+import re # For flexible text parsing in worker interface
 
 # --- Telegram Imports ---
 from telegram import Update, BotCommand, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
@@ -872,19 +873,26 @@ async def handle_worker_single_product_message(update: Update, context: ContextT
         return
     
     if not update.message or not update.message.text:
-        await update.message.reply_text("Please send the product details in the format: [size] [price] (e.g., '2g 30.00')")
+        await update.message.reply_text("Please send the product details (size and price)")
         return
     
-    # Parse size and price from input like "2g 30.00"
+    # Flexible parsing - accept any text format
     input_text = update.message.text.strip()
-    parts = input_text.split()
     
-    if len(parts) < 2:
-        await update.message.reply_text("❌ Invalid format. Please use: [size] [price] (e.g., '2g 30.00')")
+    # Try to extract price (look for decimal numbers)
+    price_matches = re.findall(r'\d+\.?\d*', input_text)
+    
+    if price_matches:
+        # Use the last number found as price, rest as size
+        price_text = price_matches[-1]
+        # Remove the price from the input to get size
+        size_text = input_text.replace(price_text, '').strip()
+        if not size_text:
+            size_text = "1g"  # Default size if only price given
+    else:
+        # No numbers found - ask for price
+        await update.message.reply_text("Please include a price in your message (e.g., '2g 30.00' or 'small batch 25')")
         return
-    
-    size_text = parts[0]
-    price_text = parts[1]
     
     try:
         price_value = Decimal(price_text)
@@ -892,7 +900,7 @@ async def handle_worker_single_product_message(update: Update, context: ContextT
             await update.message.reply_text("❌ Price must be positive. Please try again.")
             return
     except ValueError:
-        await update.message.reply_text("❌ Invalid price format. Please enter a valid decimal price (e.g., 30.00)")
+        await update.message.reply_text("❌ Could not understand the price. Please include a valid price number.")
         return
     
     # Get stored context data
@@ -945,16 +953,23 @@ async def handle_worker_bulk_products_message(update: Update, context: ContextTy
     if not update.message or not update.message.text:
         return  # Skip non-text messages
     
-    # Parse size and price from input like "2g 30.00"
+    # Flexible parsing - accept any text format
     input_text = update.message.text.strip()
-    parts = input_text.split()
     
-    if len(parts) < 2:
-        await update.message.reply_text("❌ Invalid format. Please use: [size] [price] (e.g., '2g 30.00')")
+    # Try to extract price (look for decimal numbers)
+    price_matches = re.findall(r'\d+\.?\d*', input_text)
+    
+    if price_matches:
+        # Use the last number found as price, rest as size
+        price_text = price_matches[-1]
+        # Remove the price from the input to get size
+        size_text = input_text.replace(price_text, '').strip()
+        if not size_text:
+            size_text = "1g"  # Default size if only price given
+    else:
+        # No numbers found - ask for price
+        await update.message.reply_text("Please include a price in your message (e.g., '2g 30.00' or 'small batch 25')")
         return
-    
-    size_text = parts[0]
-    price_text = parts[1]
     
     try:
         price_value = Decimal(price_text)
@@ -962,7 +977,7 @@ async def handle_worker_bulk_products_message(update: Update, context: ContextTy
             await update.message.reply_text("❌ Price must be positive. Please try again.")
             return
     except ValueError:
-        await update.message.reply_text("❌ Invalid price format. Please enter a valid decimal price (e.g., 30.00)")
+        await update.message.reply_text("❌ Could not understand the price. Please include a valid price number.")
         return
     
     # Get current bulk products list

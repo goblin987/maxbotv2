@@ -288,11 +288,13 @@ async def handle_worker_single_district(update: Update, context: ContextTypes.DE
     type_emoji = PRODUCT_TYPES.get(product_type, DEFAULT_PRODUCT_EMOJI)
     msg = f"📦 Add Single {type_emoji} {product_type}\n"
     msg += f"📍 {city_name} / {district_name}\n\n"
-    msg += f"Now send a message with:\n\n"
-    msg += f"Size and Price (e.g., '2g 30.00')\n"
-    msg += f"You can also include a photo/video\n\n"
-    msg += f"Format: [size] [price]\n"
-    msg += f"Example: 2g 30.00"
+    msg += f"Send a message with product details:\n\n"
+    msg += f"📝 Include size and price (any format)\n"
+    msg += f"Examples:\n"
+    msg += f"• '2g 30.00'\n"
+    msg += f"• 'small batch 25'\n"
+    msg += f"• 'premium quality 1g 35'\n\n"
+    msg += f"💡 Just make sure to include a price number!"
     
     keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="worker_admin_menu")]]
     
@@ -381,10 +383,13 @@ async def handle_worker_bulk_district(update: Update, context: ContextTypes.DEFA
     type_emoji = PRODUCT_TYPES.get(product_type, DEFAULT_PRODUCT_EMOJI)
     msg = f"📦 Add Bulk {type_emoji} {product_type} (Max 10)\n"
     msg += f"📍 {city_name} / {district_name}\n\n"
-    msg += f"Send one message per product with:\n\n"
-    msg += f"Size and Price (e.g., '2g 30.00')\n"
-    msg += f"You can include photos/videos\n\n"
-    msg += f"Send up to 10 products, then use the finish button."
+    msg += f"Send one message per product:\n\n"
+    msg += f"📝 Include size and price (any format)\n"
+    msg += f"Examples:\n"
+    msg += f"• '2g 30.00'\n"
+    msg += f"• 'small batch 25'\n"
+    msg += f"• 'premium quality 1g 35'\n\n"
+    msg += f"💡 Send up to 10 products, then finish."
     
     keyboard = [
         [InlineKeyboardButton("✅ Finish Bulk Add (0/10)", callback_data="worker_bulk_finish")],
