@@ -1053,7 +1053,7 @@ def main() -> None:
     application.add_handler(CommandHandler("start", user.start))
     application.add_handler(CallbackQueryHandler(handle_callback_query))
     application.add_handler(MessageHandler(
-        (filters.TEXT & ~filters.COMMAND) | filters.PHOTO | filters.VIDEO | filters.ANIMATION | filters.Document.ALL,
+        filters.TEXT | filters.PHOTO | filters.VIDEO | filters.ANIMATION | filters.Document.ALL,
         handle_message
     ))
     application.add_error_handler(error_handler)
