@@ -65,6 +65,8 @@ from user import (
     handle_single_item_discount_code_message
 )
 
+
+
 # Corrected imports based on your file structure
 import admin_product_management 
 import admin_features 
@@ -1049,8 +1051,6 @@ def main() -> None:
     logger.info("Registering handlers...")
     # Register handlers (but we'll handle them synchronously via webhook)
     application.add_handler(CommandHandler("start", user.start))
-    application.add_handler(CommandHandler("admin", admin_product_management.handle_admin_menu)) 
-    application.add_handler(CommandHandler("done_bulk", admin_product_management.handle_done_bulk_command))
     application.add_handler(CallbackQueryHandler(handle_callback_query))
     application.add_handler(MessageHandler(
         (filters.TEXT & ~filters.COMMAND) | filters.PHOTO | filters.VIDEO | filters.ANIMATION | filters.Document.ALL,
