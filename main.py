@@ -334,14 +334,6 @@ def callback_query_router(func):
                 "worker_menu": worker_interface.handle_worker_admin_menu,  # Alternative name
                 "worker_main": worker_interface.handle_worker_admin_menu,  # Alternative name
                 
-                # Worker Statistics and Enhanced Features
-                "worker_view_stats": worker_interface.handle_worker_view_stats,
-                "worker_leaderboard": worker_interface.handle_worker_leaderboard,
-                "worker_view_stats_enhanced": worker_interface.handle_worker_view_stats_enhanced,
-                "worker_revenue_breakdown": worker_interface.handle_worker_revenue_breakdown,
-                "worker_goal_tracking": worker_interface.handle_worker_goal_tracking,
-                "worker_weekly_detailed_report": worker_interface.handle_worker_view_stats,  # Fallback
-                
                 # NEW: Bulk Stock Management Handlers (from admin_bulk_stock.py)
                 **BULK_STOCK_HANDLERS,
                 **COMPLETE_BULK_STOCK_HANDLERS,
