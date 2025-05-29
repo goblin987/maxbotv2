@@ -765,6 +765,47 @@ async def handle_worker_bulk_forwarded_drops(update: Update, context: ContextTyp
         # Update progress display to show failed count
         await _update_worker_bulk_progress_display(update, context)
 
+async def _ensure_scheduled_material_batches_exists():
+    """Ensure the scheduled_material_batches table exists to prevent trigger errors"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Create the table if it doesn't exist (minimal structure to satisfy any triggers)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS scheduled_material_batches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                product_id INTEGER,
+                batch_data TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        conn.commit()
+        logger.info("Ensured scheduled_material_batches table exists")
+        
+    except Exception as e:
+        logger.error(f"Error creating scheduled_material_batches table: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+async def _add_single_worker_bulk_item_to_db(context: ContextTypes.DEFAULT_TYPE, product_type: str, city_name: str, district_name: str, media_info_list: list, original_text: str, worker_id: int) -> bool:
+    """Helper function to add a single worker bulk item to the database - CLEAN VERSION"""
+    # Ensure the problematic table exists first
+    await _ensure_scheduled_material_batches_exists()
+    
+    # Use the simplified insert function instead
+    success = await _simple_worker_product_insert(context, product_type, city_name, district_name, original_text, worker_id)
+    
+    if success:
+        logger.info(f"Worker bulk item added successfully using simplified function")
+        return True
+    else:
+        logger.error(f"Worker bulk item failed using simplified function")
+        return False
+
 async def _simple_worker_product_insert(context: ContextTypes.DEFAULT_TYPE, product_type: str, city_name: str, district_name: str, original_text: str, worker_id: int) -> bool:
     """Simplified function to insert worker product - bypassing any potential issues"""
     conn = None
@@ -773,6 +814,17 @@ async def _simple_worker_product_insert(context: ContextTypes.DEFAULT_TYPE, prod
         # Simple database connection and insert
         conn = get_db_connection()
         cursor = conn.cursor()
+        
+        # DEBUG: Check for triggers on products table
+        cursor.execute("SELECT name, sql FROM sqlite_master WHERE type='trigger' AND tbl_name='products'")
+        triggers = cursor.fetchall()
+        if triggers:
+            logger.warning(f"Found triggers on products table: {triggers}")
+        
+        # DEBUG: Check if scheduled_material_batches exists
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='scheduled_material_batches'")
+        table_exists = cursor.fetchone()
+        logger.info(f"scheduled_material_batches table exists: {table_exists is not None}")
         
         # Direct insert without any complexity
         insert_sql = "INSERT INTO products (city, district, product_type, size, name, price, available, added_by, original_text, added_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
@@ -819,18 +871,6 @@ async def _simple_worker_product_insert(context: ContextTypes.DEFAULT_TYPE, prod
     finally:
         if conn:
             conn.close()
-
-async def _add_single_worker_bulk_item_to_db(context: ContextTypes.DEFAULT_TYPE, product_type: str, city_name: str, district_name: str, media_info_list: list, original_text: str, worker_id: int) -> bool:
-    """Helper function to add a single worker bulk item to the database - CLEAN VERSION"""
-    # Use the simplified insert function instead
-    success = await _simple_worker_product_insert(context, product_type, city_name, district_name, original_text, worker_id)
-    
-    if success:
-        logger.info(f"Worker bulk item added successfully using simplified function")
-        return True
-    else:
-        logger.error(f"Worker bulk item failed using simplified function")
-        return False
 
 async def _finish_worker_bulk_session(update: Update, context: ContextTypes.DEFAULT_TYPE, message: str = "Worker bulk add session ended."):
     """Cleans up worker bulk add context and shows summary"""
