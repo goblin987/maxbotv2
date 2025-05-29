@@ -51,10 +51,18 @@ SECONDARY_ADMIN_IDS_STR = os.environ.get("SECONDARY_ADMIN_IDS", "")
 SUPPORT_USERNAME = os.environ.get("SUPPORT_USERNAME", "support")
 BASKET_TIMEOUT_MINUTES_STR = os.environ.get("BASKET_TIMEOUT_MINUTES", "15")
 
+# DEBUG: Log the raw environment variable value
+logger.info(f"DEBUG: ADMIN_ID_RAW from environment: '{ADMIN_ID_RAW}' (type: {type(ADMIN_ID_RAW)})")
+
 ADMIN_ID = None
 if ADMIN_ID_RAW is not None:
-    try: ADMIN_ID = int(ADMIN_ID_RAW)
-    except (ValueError, TypeError): logger.error(f"Invalid format for ADMIN_ID: {ADMIN_ID_RAW}. Must be an integer.")
+    try: 
+        ADMIN_ID = int(ADMIN_ID_RAW)
+        logger.info(f"DEBUG: Successfully parsed ADMIN_ID: {ADMIN_ID}")
+    except (ValueError, TypeError): 
+        logger.error(f"Invalid format for ADMIN_ID: {ADMIN_ID_RAW}. Must be an integer.")
+else:
+    logger.warning(f"DEBUG: ADMIN_ID_RAW is None - environment variable not set")
 
 SECONDARY_ADMIN_IDS = []
 if SECONDARY_ADMIN_IDS_STR:
@@ -73,6 +81,7 @@ if not NOWPAYMENTS_API_KEY: logger.critical("CRITICAL ERROR: NOWPAYMENTS_API_KEY
 if not NOWPAYMENTS_IPN_SECRET: logger.warning("WARNING: NOWPAYMENTS_IPN_SECRET environment variable is missing. Webhook verification disabled (less secure).")
 if not WEBHOOK_URL: logger.critical("CRITICAL ERROR: WEBHOOK_URL environment variable is missing."); raise SystemExit("WEBHOOK_URL not set.")
 if ADMIN_ID is None: logger.warning("ADMIN_ID not set or invalid. Primary admin features disabled.")
+logger.info(f"DEBUG: Final ADMIN_ID value: {ADMIN_ID}")
 logger.info(f"Loaded {len(SECONDARY_ADMIN_IDS)} secondary admin ID(s): {SECONDARY_ADMIN_IDS}")
 logger.info(f"Basket timeout set to {BASKET_TIMEOUT // 60} minutes.")
 logger.info(f"NOWPayments IPN expected at: {WEBHOOK_URL}/webhook")
