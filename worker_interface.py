@@ -442,19 +442,19 @@ async def handle_worker_confirm_single_product(update: Update, context: ContextT
         c = conn.cursor()
         
         # Find or create city
-        c.execute("SELECT city_id FROM cities WHERE city_name = ?", (product_data["city"],))
+        c.execute("SELECT id FROM cities WHERE name = ?", (product_data["city"],))
         city_result = c.fetchone()
         if not city_result:
-            c.execute("INSERT INTO cities (city_name) VALUES (?)", (product_data["city"],))
+            c.execute("INSERT INTO cities (name) VALUES (?)", (product_data["city"],))
             city_id = c.lastrowid
         else:
             city_id = city_result[0]
         
         # Find or create district
-        c.execute("SELECT district_id FROM districts WHERE city_id = ? AND district_name = ?", (city_id, product_data["district"]))
+        c.execute("SELECT id FROM districts WHERE city_id = ? AND name = ?", (city_id, product_data["district"]))
         district_result = c.fetchone()
         if not district_result:
-            c.execute("INSERT INTO districts (city_id, district_name) VALUES (?, ?)", (city_id, product_data["district"]))
+            c.execute("INSERT INTO districts (city_id, name) VALUES (?, ?)", (city_id, product_data["district"]))
             district_id = c.lastrowid
         else:
             district_id = district_result[0]
@@ -462,9 +462,9 @@ async def handle_worker_confirm_single_product(update: Update, context: ContextT
         # Insert product
         type_emoji = PRODUCT_TYPES.get(product_data["type"], DEFAULT_PRODUCT_EMOJI)
         c.execute("""
-            INSERT INTO products (city_id, district_id, product_type, size, price, available, added_by)
-            VALUES (?, ?, ?, ?, ?, 1, ?)
-        """, (city_id, district_id, product_data["type"], product_data["size"], product_data["price"], user_id))
+            INSERT INTO products (city, district, product_type, size, name, price, available, added_by, original_text, added_date)
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, CURRENT_TIMESTAMP)
+        """, (product_data["city"], product_data["district"], product_data["type"], product_data["size"], "Worker Product", product_data["price"], user_id, product_data.get("original_text", f"{product_data['size']} {product_data['price']} EUR")))
         
         product_id = c.lastrowid
         
@@ -521,19 +521,19 @@ async def handle_worker_confirm_bulk_products(update: Update, context: ContextTy
         c = conn.cursor()
         
         # Find or create city
-        c.execute("SELECT city_id FROM cities WHERE city_name = ?", (product_data["city"],))
+        c.execute("SELECT id FROM cities WHERE name = ?", (product_data["city"],))
         city_result = c.fetchone()
         if not city_result:
-            c.execute("INSERT INTO cities (city_name) VALUES (?)", (product_data["city"],))
+            c.execute("INSERT INTO cities (name) VALUES (?)", (product_data["city"],))
             city_id = c.lastrowid
         else:
             city_id = city_result[0]
         
         # Find or create district
-        c.execute("SELECT district_id FROM districts WHERE city_id = ? AND district_name = ?", (city_id, product_data["district"]))
+        c.execute("SELECT id FROM districts WHERE city_id = ? AND name = ?", (city_id, product_data["district"]))
         district_result = c.fetchone()
         if not district_result:
-            c.execute("INSERT INTO districts (city_id, district_name) VALUES (?, ?)", (city_id, product_data["district"]))
+            c.execute("INSERT INTO districts (city_id, name) VALUES (?, ?)", (city_id, product_data["district"]))
             district_id = c.lastrowid
         else:
             district_id = district_result[0]
@@ -545,9 +545,9 @@ async def handle_worker_confirm_bulk_products(update: Update, context: ContextTy
         product_ids = []
         for i in range(bulk_quantity):
             c.execute("""
-                INSERT INTO products (city_id, district_id, product_type, size, price, available, added_by)
-                VALUES (?, ?, ?, ?, ?, 1, ?)
-            """, (city_id, district_id, product_data["type"], product_data["size"], product_data["price"], user_id))
+                INSERT INTO products (city, district, product_type, size, name, price, available, added_by, original_text, added_date)
+                VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, CURRENT_TIMESTAMP)
+            """, (product_data["city"], product_data["district"], product_data["type"], product_data["size"], "Worker Bulk Product", product_data["price"], user_id, product_data.get("original_text", f"{product_data['size']} {product_data['price']} EUR - Bulk #{i+1}")))
             product_ids.append(c.lastrowid)
         
         # Log worker action
@@ -785,28 +785,29 @@ async def _add_single_worker_bulk_item_to_db(context: ContextTypes.DEFAULT_TYPE,
         c = conn.cursor()
         
         # Find or create city
-        c.execute("SELECT city_id FROM cities WHERE city_name = ?", (city_name,))
+        c.execute("SELECT id FROM cities WHERE name = ?", (city_name,))
         city_result = c.fetchone()
         if not city_result:
-            c.execute("INSERT INTO cities (city_name) VALUES (?)", (city_name,))
+            c.execute("INSERT INTO cities (name) VALUES (?)", (city_name,))
             city_id = c.lastrowid
         else:
             city_id = city_result[0]
         
         # Find or create district
-        c.execute("SELECT district_id FROM districts WHERE city_id = ? AND district_name = ?", (city_id, district_name))
+        c.execute("SELECT id FROM districts WHERE city_id = ? AND name = ?", (city_id, district_name))
         district_result = c.fetchone()
         if not district_result:
-            c.execute("INSERT INTO districts (city_id, district_name) VALUES (?, ?)", (city_id, district_name))
+            c.execute("INSERT INTO districts (city_id, name) VALUES (?, ?)", (city_id, district_name))
             district_id = c.lastrowid
         else:
             district_id = district_result[0]
         
-        # Create product with worker ID
+        # Insert product
+        type_emoji = PRODUCT_TYPES.get(product_type, DEFAULT_PRODUCT_EMOJI)
         c.execute("""
-            INSERT INTO products (city_id, district_id, product_type, size, price, available, added_by, original_text, added_date)
-            VALUES (?, ?, ?, ?, ?, 1, ?, ?, CURRENT_TIMESTAMP)
-        """, (city_id, district_id, product_type, "1g", 25.0, worker_id, original_text))  # Default values, caption as original_text
+            INSERT INTO products (city, district, product_type, size, name, price, available, added_by, original_text, added_date)
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, CURRENT_TIMESTAMP)
+        """, (city_name, district_name, product_type, "1g", "Worker Product", 25.0, worker_id, original_text))
         
         product_id = c.lastrowid
         
@@ -856,8 +857,8 @@ async def _add_single_worker_bulk_item_to_db(context: ContextTypes.DEFAULT_TYPE,
         # Log worker action
         c.execute("""
             INSERT INTO worker_actions (worker_id, action_type, product_id, details, quantity, timestamp)
-            VALUES (?, 'add_bulk_forwarded', ?, ?, 1, CURRENT_TIMESTAMP)
-        """, (worker_id, product_id, f"Added {product_type} via forwarded message in {city_name}/{district_name}"))
+            VALUES (?, 'add_bulk_forwarded', ?, ?, ?, CURRENT_TIMESTAMP)
+        """, (worker_id, product_id, f"Added {product_type} via forwarded message in {city_name}/{district_name}", 1))
         
         conn.commit()
         logger.info(f"Worker Bulk Added: Product {product_id} by worker {worker_id} via forwarded message.")
