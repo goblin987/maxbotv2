@@ -309,20 +309,17 @@ def callback_query_router(func):
                 "worker_type_selection": worker_interface.handle_worker_type_selection,
                 "worker_type": worker_interface.handle_worker_type_selection,  # Handle old callback format
                 "worker_add_products": worker_interface.handle_worker_add_products,
-                "worker_size": worker_interface.handle_worker_size,
-                "worker_custom_size": worker_interface.handle_worker_custom_size,
-                "worker_confirm_add_drop": worker_interface.handle_worker_confirm_add_drop,
+                "worker_restock_product": worker_interface.handle_worker_restock_product,  # NEW: Product restocking
+                "worker_confirm_restock": worker_interface.handle_worker_confirm_restock,  # NEW: Restock confirmation
+                
+                # Removed old handlers - workers now only restock existing products:
+                # "worker_size" - workers don't select sizes anymore
+                # "worker_custom_size" - workers don't create custom sizes  
+                # "worker_confirm_add_drop" - workers don't create new products
                 
                 # Additional backwards compatibility mappings
                 "worker_menu": worker_interface.handle_worker_admin_menu,  # Alternative name
                 "worker_main": worker_interface.handle_worker_admin_menu,  # Alternative name
-                
-                # Worker Bulk Add Callbacks
-                "worker_bulk_start_setup": worker_interface.handle_worker_bulk_start_setup,
-                "worker_bulk_city_chosen": worker_interface.handle_worker_bulk_city_chosen,
-                "worker_bulk_district_chosen": worker_interface.handle_worker_bulk_district_chosen,
-                "worker_bulk_type_chosen": worker_interface.handle_worker_bulk_type_chosen,
-                "worker_bulk_finish": worker_interface.handle_worker_bulk_finish,
                 
                 # Worker Statistics and Enhanced Features
                 "worker_view_stats": worker_interface.handle_worker_view_stats,
@@ -401,11 +398,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Admin Workers Message Handling
         await admin_workers.handle_admin_worker_message(update, context)
         
-        # Worker Message Handling (follows admin pattern)
-        await handle_worker_price_message(update, context)
-        await handle_worker_custom_size_message(update, context)
-        await handle_worker_bulk_size_message(update, context)
-        await handle_worker_bulk_price_message(update, context)
+        # Worker Message Handling (restock existing products only)
+        await handle_worker_restock_quantity_message(update, context)
         await handle_worker_media_message(update, context)
         
         # Reseller Management Message Handling  
@@ -858,12 +852,12 @@ def telegram_webhook():
 # Workers now use the structured callback-based interface in worker_interface.py:
 # City → District → Type → Size → Price → Media → Confirmation
 
-async def handle_worker_price_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle worker price input"""
+async def handle_worker_restock_quantity_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle worker restock quantity input"""
     user_id = update.effective_user.id
     
-    # Check if user is in price input state
-    if context.user_data.get("state") != "awaiting_worker_price":
+    # Check if user is in restock quantity input state
+    if context.user_data.get("state") != "awaiting_worker_restock_quantity":
         return
     
     # Verify worker permissions
@@ -873,182 +867,59 @@ async def handle_worker_price_message(update: Update, context: ContextTypes.DEFA
         return
     
     if not update.message or not update.message.text:
-        await update.message.reply_text("Please send the price as text (e.g., 25.50).")
+        await update.message.reply_text("Please send the quantity as a number (e.g., 5, 10, 1).")
         return
     
-    price_text = update.message.text.strip()
+    quantity_text = update.message.text.strip()
     try:
-        price_value = float(price_text)
-        if price_value <= 0:
-            await update.message.reply_text("❌ Price must be positive. Please try again.")
+        quantity_value = int(quantity_text)
+        if quantity_value <= 0:
+            await update.message.reply_text("❌ Quantity must be positive. Please try again.")
             return
     except ValueError:
-        await update.message.reply_text("❌ Invalid price format. Please enter a number (e.g., 25.50).")
+        await update.message.reply_text("❌ Invalid quantity format. Please enter a whole number (e.g., 5, 10).")
         return
     
-    # Store price and ask for confirmation
-    context.user_data["worker_price"] = price_value
-    context.user_data["state"] = "awaiting_worker_media_or_confirm"
+    # Store quantity and ask for confirmation
+    context.user_data["worker_restock_quantity"] = quantity_value
     
-    city = context.user_data.get("worker_city", "N/A")
-    district = context.user_data.get("worker_district", "N/A")
-    p_type = context.user_data.get("worker_product_type", "N/A")
-    size = context.user_data.get("worker_size", "N/A")
+    # Get product details for confirmation
+    product_data = context.user_data.get("worker_restock_product")
+    if not product_data:
+        await update.message.reply_text("❌ Product information lost. Please start again.")
+        return
+    
+    p_type = product_data.get('product_type', 'Product')
+    size = product_data.get('size', 'N/A')
+    city = product_data.get('city', 'N/A')
+    district = product_data.get('district', 'N/A')
+    price = product_data.get('price', 0)
+    available = product_data.get('available', 0)
     type_emoji = PRODUCT_TYPES.get(p_type, DEFAULT_PRODUCT_EMOJI)
     
-    msg = f"📦 **Product Summary:**\n\n"
-    msg += f"• Location: {city} / {district}\n"
-    msg += f"• Type: {type_emoji} {p_type}\n"
-    msg += f"• Size: {size}\n"
-    msg += f"• Price: {price_value:.2f} EUR\n\n"
-    msg += "✅ **Ready to add!**\n\n"
-    msg += "You can now:\n"
-    msg += "• Add photos/videos/media (optional)\n"
-    msg += "• Or confirm to add the product\n\n"
-    msg += "Send media files or use the button below:"
+    msg = f"📦 **Confirm Restock**\n\n"
+    msg += f"• **Product:** {type_emoji} {p_type} - {size}\n"
+    msg += f"• **Location:** {city} / {district}\n"
+    msg += f"• **Price:** {price:.2f} EUR\n"
+    msg += f"• **Current Stock:** {available} units\n"
+    msg += f"• **Adding:** {quantity_value} units\n"
+    msg += f"• **New Total:** {available + quantity_value} units\n\n"
+    msg += "✅ **Ready to restock!**"
     
     keyboard = [
-        [InlineKeyboardButton("✅ Confirm & Add Product", callback_data="worker_confirm_add_drop")],
+        [InlineKeyboardButton("✅ Confirm Restock", callback_data="worker_confirm_restock")],
         [InlineKeyboardButton("❌ Cancel", callback_data="worker_admin_menu")]
     ]
     
     await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
-async def handle_worker_custom_size_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle worker custom size input"""
-    user_id = update.effective_user.id
-    
-    # Check if user is in custom size input state
-    if context.user_data.get("state") != "awaiting_worker_custom_size":
-        return
-    
-    # Verify worker permissions
-    user_roles = get_user_roles(user_id)
-    if not user_roles['is_worker']:
-        await update.message.reply_text("❌ Access denied. Worker permissions required.")
-        return
-    
-    if not update.message or not update.message.text:
-        await update.message.reply_text("Please send the custom size as text (e.g., 3g, 1 piece).")
-        return
-    
-    size_text = update.message.text.strip()
-    if not size_text or len(size_text) > 20:
-        await update.message.reply_text("❌ Invalid size. Please enter 1-20 characters.")
-        return
-    
-    # Store size and ask for price
-    context.user_data["worker_size"] = size_text
-    context.user_data["state"] = "awaiting_worker_price"
-    
-    city = context.user_data.get("worker_city", "N/A")
-    district = context.user_data.get("worker_district", "N/A")
-    p_type = context.user_data.get("worker_product_type", "N/A")
-    type_emoji = PRODUCT_TYPES.get(p_type, DEFAULT_PRODUCT_EMOJI)
-    
-    keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="worker_admin_menu")]]
-    msg = f"📦 {type_emoji} {p_type} - {size_text} in {city} / {district}\n\n💰 Please reply with the price in EUR (e.g., 25.50):"
-    
-    await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
-
-async def handle_worker_bulk_size_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle worker bulk size input"""
-    user_id = update.effective_user.id
-    
-    # Check if user is in bulk size input state
-    if context.user_data.get("state") != "awaiting_worker_bulk_size_input":
-        return
-    
-    # Verify worker permissions
-    user_roles = get_user_roles(user_id)
-    if not user_roles['is_worker']:
-        await update.message.reply_text("❌ Access denied. Worker permissions required.")
-        return
-    
-    if not update.message or not update.message.text:
-        await update.message.reply_text("Please send the common size as text (e.g., 2g, 1 piece).")
-        return
-    
-    size_text = update.message.text.strip()
-    if not size_text or len(size_text) > 20:
-        await update.message.reply_text("❌ Invalid size. Please enter 1-20 characters.")
-        return
-    
-    # Store size and ask for price
-    context.user_data['worker_bulk_common_details']['size'] = size_text
-    context.user_data['state'] = 'awaiting_worker_bulk_price_input'
-    
-    city_name = context.user_data.get('worker_bulk_common_details', {}).get('city_name', "N/A")
-    dist_name = context.user_data.get('worker_bulk_common_details', {}).get('district_name', "N/A")
-    p_type = context.user_data.get('worker_bulk_common_details', {}).get('product_type', "N/A")
-    type_emoji = PRODUCT_TYPES.get(p_type, DEFAULT_PRODUCT_EMOJI)
-    
-    keyboard = [[InlineKeyboardButton("❌ Cancel Bulk Add", callback_data="worker_admin_menu")]]
-    msg = f"📦 Bulk Add for {type_emoji} {p_type} - {size_text} in {city_name}/{dist_name}.\n\nStep 5: Please reply with the common price in EUR for these items (e.g., 25.50):"
-    
-    await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
-
-async def handle_worker_bulk_price_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle worker bulk price input"""
-    user_id = update.effective_user.id
-    
-    # Check if user is in bulk price input state
-    if context.user_data.get("state") != "awaiting_worker_bulk_price_input":
-        return
-    
-    # Verify worker permissions
-    user_roles = get_user_roles(user_id)
-    if not user_roles['is_worker']:
-        await update.message.reply_text("❌ Access denied. Worker permissions required.")
-        return
-    
-    if not update.message or not update.message.text:
-        await update.message.reply_text("Please send the price as text (e.g., 25.50).")
-        return
-    
-    price_text = update.message.text.strip()
-    try:
-        price_value = float(price_text)
-        if price_value <= 0:
-            await update.message.reply_text("❌ Price must be positive. Please try again.")
-            return
-    except ValueError:
-        await update.message.reply_text("❌ Invalid price format. Please enter a number (e.g., 25.50).")
-        return
-    
-    # Store price and start bulk item addition flow
-    context.user_data['worker_bulk_common_details']['price'] = price_value
-    context.user_data['state'] = 'awaiting_worker_bulk_drops_forwarded'
-    
-    city_name = context.user_data.get('worker_bulk_common_details', {}).get('city_name', "N/A")
-    dist_name = context.user_data.get('worker_bulk_common_details', {}).get('district_name', "N/A")
-    p_type = context.user_data.get('worker_bulk_common_details', {}).get('product_type', "N/A")
-    size = context.user_data.get('worker_bulk_common_details', {}).get('size', "N/A")
-    type_emoji = PRODUCT_TYPES.get(p_type, DEFAULT_PRODUCT_EMOJI)
-    
-    msg = f"📦 **Bulk Add Configuration Complete!**\n\n"
-    msg += f"• Location: {city_name} / {dist_name}\n"
-    msg += f"• Type: {type_emoji} {p_type}\n"
-    msg += f"• Size: {size}\n"
-    msg += f"• Price: {price_value:.2f} EUR\n\n"
-    msg += "🔄 **Now start sending your product drops!**\n\n"
-    msg += "Send each product as a separate message with media (photos/videos). Each message will become one product.\n\n"
-    msg += "When finished, use the button below:"
-    
-    keyboard = [
-        [InlineKeyboardButton("✅ Finish Bulk Add", callback_data="worker_bulk_finish")],
-        [InlineKeyboardButton("❌ Cancel Bulk Add", callback_data="worker_admin_menu")]
-    ]
-    
-    await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-
 async def handle_worker_media_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle worker media uploads during product addition"""
+    """Handle worker media uploads during product restocking"""
     user_id = update.effective_user.id
     
-    # Check if user is in media state or bulk forwarding state
+    # Check if user is in media state or restocking state
     state = context.user_data.get("state")
-    if state not in ["awaiting_worker_media_or_confirm", "awaiting_worker_bulk_drops_forwarded"]:
+    if state not in ["awaiting_worker_media_or_confirm", "awaiting_worker_restock_quantity"]:
         return
     
     # Verify worker permissions
@@ -1056,150 +927,13 @@ async def handle_worker_media_message(update: Update, context: ContextTypes.DEFA
     if not user_roles['is_worker']:
         return
     
-    # Handle bulk forwarding
-    if state == "awaiting_worker_bulk_drops_forwarded":
-        await _handle_worker_bulk_item_addition(update, context)
-        return
-    
-    # Handle single product media
-    if state == "awaiting_worker_media_or_confirm":
-        message = update.message
-        if not message:
-            return
-        
-        # Initialize media storage if not exists
-        if "worker_media_list" not in context.user_data:
-            context.user_data["worker_media_list"] = []
-        if "worker_temp_dir" not in context.user_data:
-            context.user_data["worker_temp_dir"] = tempfile.mkdtemp(prefix="worker_media_")
-        
-        media_list = context.user_data["worker_media_list"]
-        temp_dir = context.user_data["worker_temp_dir"]
-        
-        # Process media similar to admin flow
-        try:
-            file_obj = None
-            media_type = None
-            
-            if message.photo:
-                file_obj = message.photo[-1]  # Get highest resolution
-                media_type = "photo"
-            elif message.video:
-                file_obj = message.video
-                media_type = "video"
-            elif message.animation:
-                file_obj = message.animation
-                media_type = "animation"
-            elif message.document:
-                file_obj = message.document
-                media_type = "document"
-            
-            if file_obj:
-                file_path = os.path.join(temp_dir, f"{file_obj.file_id}_{len(media_list)}")
-                
-                # Download file
-                telegram_file = await context.bot.get_file(file_obj.file_id)
-                await telegram_file.download_to_drive(file_path)
-                
-                media_list.append({
-                    "type": media_type,
-                    "path": file_path,
-                    "file_id": file_obj.file_id
-                })
-                
-                await message.reply_text(f"📎 Media added! ({len(media_list)} file(s) total)\n\nSend more media or confirm to add the product.")
-                return
-        except Exception as e:
-            logger.error(f"Error processing worker media: {e}")
-            await message.reply_text("❌ Error processing media. You can still confirm without media.")
-
-async def _handle_worker_bulk_item_addition(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Helper to handle individual bulk item addition"""
-    user_id = update.effective_user.id
+    # For now, workers don't upload media during restocking
+    # This function is kept for future media upload functionality
     message = update.message
-    
     if not message:
         return
     
-    bulk_details = context.user_data.get('worker_bulk_common_details', {})
-    if not bulk_details:
-        await message.reply_text("❌ Bulk configuration lost. Please start again.")
-        return
-    
-    # Create product with bulk details
-    try:
-        city = bulk_details['city_name']
-        district = bulk_details['district_name']
-        p_type = bulk_details['product_type']
-        size = bulk_details['size']
-        price = bulk_details['price']
-        
-        # Generate unique product name
-        bulk_count = context.user_data.get('worker_bulk_items_added_count', 0) + 1
-        product_name = f"{p_type} {size} WB_{int(time.time())}_{bulk_count}"
-        original_text = f"Worker bulk added: {p_type} {size} - {price} EUR"
-        
-        # Insert into database
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute("BEGIN")
-        
-        insert_params = (
-            city, district, p_type, size, product_name, float(price), 1, 0, original_text,
-            user_id, datetime.now(timezone.utc).isoformat()
-        )
-        
-        c.execute("""INSERT INTO products
-                        (city, district, product_type, size, name, price, available, reserved, original_text, added_by, added_date)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", insert_params)
-        
-        product_id = c.lastrowid
-        
-        # Handle media if present
-        if message.photo or message.video or message.animation or message.document:
-            final_media_dir = os.path.join(MEDIA_DIR, str(product_id))
-            os.makedirs(final_media_dir, exist_ok=True)
-            
-            file_obj = None
-            media_type = None
-            
-            if message.photo:
-                file_obj = message.photo[-1]
-                media_type = "photo"
-            elif message.video:
-                file_obj = message.video
-                media_type = "video"
-            elif message.animation:
-                file_obj = message.animation
-                media_type = "animation"
-            elif message.document:
-                file_obj = message.document
-                media_type = "document"
-            
-            if file_obj:
-                file_path = os.path.join(final_media_dir, f"{file_obj.file_id}")
-                telegram_file = await context.bot.get_file(file_obj.file_id)
-                await telegram_file.download_to_drive(file_path)
-                
-                c.execute("INSERT INTO product_media (product_id, media_type, file_path, telegram_file_id) VALUES (?, ?, ?, ?)",
-                         (product_id, media_type, file_path, file_obj.file_id))
-        
-        conn.commit()
-        conn.close()
-        
-        # Update counter
-        context.user_data['worker_bulk_items_added_count'] = bulk_count
-        
-        # Send confirmation
-        type_emoji = PRODUCT_TYPES.get(p_type, DEFAULT_PRODUCT_EMOJI)
-        await message.reply_text(f"✅ Product #{bulk_count} added: {type_emoji} {p_type} - {size} - {price:.2f} EUR\n\nSend next product or finish when done.",
-                                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Finish Bulk Add", callback_data="worker_bulk_finish")]]))
-        
-        logger.info(f"Worker {user_id} added bulk product {product_id}: {product_name}")
-        
-    except Exception as e:
-        logger.error(f"Error adding worker bulk item: {e}")
-        await message.reply_text("❌ Error adding product. Please try again.")
+    await message.reply_text("📎 Media upload during restocking is not yet supported. Please proceed with restock confirmation.")
 
 def main() -> None:
     global telegram_app, main_loop

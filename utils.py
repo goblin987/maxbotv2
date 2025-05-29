@@ -1200,6 +1200,18 @@ def init_db():
                 FOREIGN KEY (worker_id) REFERENCES users (user_id)
             )''')
 
+            # NEW: Worker actions table for tracking worker activities
+            c.execute('''CREATE TABLE IF NOT EXISTS worker_actions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                worker_id INTEGER NOT NULL,
+                action_type TEXT NOT NULL,
+                product_id INTEGER,
+                details TEXT,
+                timestamp TEXT NOT NULL,
+                FOREIGN KEY (worker_id) REFERENCES users (user_id),
+                FOREIGN KEY (product_id) REFERENCES products (id) ON DELETE SET NULL
+            )''')
+
             # Insert initial welcome messages (only if table was just created or empty - handled by INSERT OR IGNORE)
             initial_templates = [
                 ("default", LANGUAGES['en']['welcome'], "Built-in default message (EN)"),
@@ -1247,6 +1259,11 @@ def init_db():
             c.execute("CREATE INDEX IF NOT EXISTS idx_worker_notifications_worker_id ON worker_notifications(worker_id)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_worker_notifications_type ON worker_notifications(notification_type)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_worker_notifications_created_at ON worker_notifications(created_at)")
+            # NEW: Indexes for worker actions
+            c.execute("CREATE INDEX IF NOT EXISTS idx_worker_actions_worker_id ON worker_actions(worker_id)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_worker_actions_type ON worker_actions(action_type)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_worker_actions_timestamp ON worker_actions(timestamp)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_worker_actions_product_id ON worker_actions(product_id)")
             # <<< END ADDED >>>
 
 
