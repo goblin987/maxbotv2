@@ -41,7 +41,8 @@ from utils import (
     format_currency,
     MEDIA_DIR,
     get_user_roles,  # NEW: Import for worker role checking
-    PRODUCT_TYPES    # NEW: Import for worker interface
+    PRODUCT_TYPES,    # NEW: Import for worker interface
+    DEFAULT_PRODUCT_EMOJI  # NEW: Import for worker interface fallback emoji
 )
 import user # Import user module
 from user import (
