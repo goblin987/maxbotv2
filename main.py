@@ -351,13 +351,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Check user roles for admin access
             user_roles = get_user_roles(user_id)
             
+            # Debug logging to see what roles are detected
+            logger.info(f"DEBUG: User {user_id} roles: {user_roles}")
+            
             if user_roles['is_primary'] or user_roles['is_secondary']:
                 # Full admin access
+                logger.info(f"DEBUG: Routing user {user_id} to admin panel")
                 await admin_product_management.handle_admin_menu(update, context)
             elif user_roles['is_worker']:
-                # Limited worker access
+                # Limited worker access - call worker interface
+                logger.info(f"DEBUG: Routing user {user_id} to worker interface")
                 await worker_interface.handle_worker_admin_menu(update, context)
             else:
+                logger.info(f"DEBUG: Denying access to user {user_id}")
                 await update.message.reply_text("Access denied.")
             return
         elif text.startswith('/done_bulk'):

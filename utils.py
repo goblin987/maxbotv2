@@ -1451,21 +1451,27 @@ def get_user_roles(user_id: int) -> dict:
     try:
         conn = get_db_connection()
         c = conn.cursor()
-        c.execute("SELECT is_worker FROM users WHERE user_id = ?", (user_id,))
+        c.execute("SELECT is_worker, worker_status FROM users WHERE user_id = ?", (user_id,))
         user_db_info = c.fetchone()
+        logger.info(f"DEBUG: get_user_roles for user {user_id}: database result = {user_db_info}")
         if user_db_info and user_db_info['is_worker'] == 1:
             is_worker_flag = True
+            logger.info(f"DEBUG: User {user_id} detected as worker with status: {user_db_info.get('worker_status', 'None')}")
+        else:
+            logger.info(f"DEBUG: User {user_id} NOT detected as worker")
     except sqlite3.Error as e:
         logger.error(f"DB error fetching worker status for user {user_id}: {e}")
         is_worker_flag = False # Default to false on error
     finally:
         if conn: conn.close()
 
-    return {
+    result = {
         'is_primary': user_id == ADMIN_ID,
         'is_secondary': user_id in SECONDARY_ADMIN_IDS,
         'is_worker': is_worker_flag
     }
+    logger.info(f"DEBUG: get_user_roles final result for user {user_id}: {result}")
+    return result
 # <<< END NEW User Role Checker >>>
 
 
