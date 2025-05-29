@@ -3,7 +3,13 @@
 import logging
 import sqlite3
 import math
+import os
+import time
+import tempfile
+import shutil
+import asyncio
 from datetime import datetime, timezone, timedelta
+from decimal import Decimal
 
 # --- Telegram Imports ---
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -14,13 +20,14 @@ import telegram.error as telegram_error
 from utils import (
     ADMIN_ID, SECONDARY_ADMIN_IDS, LANGUAGES, CITIES, DISTRICTS, PRODUCT_TYPES,
     get_db_connection, send_message_with_retry, _get_lang_data,
-    log_admin_action, get_user_roles, DEFAULT_PRODUCT_EMOJI
+    log_admin_action, get_user_roles, DEFAULT_PRODUCT_EMOJI, SIZES, MEDIA_DIR,
+    load_all_data
 )
 
 logger = logging.getLogger(__name__)
 
 # --- Worker Main Menu ---
-async def handle_worker_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_worker_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Main admin menu for workers - limited functionality"""
     query = update.callback_query if hasattr(update, 'callback_query') and update.callback_query else None
     user_id = update.effective_user.id
@@ -81,7 +88,8 @@ async def handle_worker_admin_menu(update: Update, context: ContextTypes.DEFAULT
     msg += "Select an action:"
 
     keyboard = [
-        [InlineKeyboardButton("➕ Add Products", callback_data="worker_add_products")],
+        [InlineKeyboardButton("➕ Add Products", callback_data="worker_city")],
+        [InlineKeyboardButton("📦➕ Bulk Add Products", callback_data="worker_bulk_start_setup")], 
         [InlineKeyboardButton("📊 Enhanced Statistics", callback_data="worker_view_stats_enhanced")],
         [InlineKeyboardButton("🏆 Leaderboard", callback_data="worker_leaderboard")],
         [InlineKeyboardButton("🏠 Main Menu", callback_data="back_start")]
@@ -93,9 +101,9 @@ async def handle_worker_admin_menu(update: Update, context: ContextTypes.DEFAULT
     else:
         await send_message_with_retry(context.bot, update.effective_chat.id, msg, reply_markup=InlineKeyboardMarkup(keyboard))
 
-# --- Add Products Flow for Workers ---
-async def handle_worker_add_products(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
-    """Worker product addition - similar to admin but with worker tracking"""
+# --- Worker Product Addition Flow (Following Admin Pattern) ---
+async def handle_worker_city(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
+    """Worker city selection - follows admin pattern"""
     query = update.callback_query
     user_id = query.from_user.id
     
@@ -104,112 +112,585 @@ async def handle_worker_add_products(update: Update, context: ContextTypes.DEFAU
     if not user_roles['is_worker']:
         return await query.answer("Access denied. Worker permissions required.", show_alert=True)
 
-    msg = "➕ Add Products\n\nSelect a city to add products:"
-    keyboard = []
+    if not CITIES:
+        return await query.edit_message_text("No cities configured. Contact admin to add cities first.", parse_mode=None)
     
-    for city_id, city_name in CITIES.items():
-        keyboard.append([InlineKeyboardButton(f"📍 {city_name}", callback_data=f"worker_city|{city_id}")])
-    
+    sorted_city_ids = sorted(CITIES.keys(), key=lambda city_id: CITIES.get(city_id, ''))
+    keyboard = [[InlineKeyboardButton(f"🏙️ {CITIES.get(c,'N/A')}", callback_data=f"worker_district|{c}")] for c in sorted_city_ids]
     keyboard.append([InlineKeyboardButton("⬅️ Back to Worker Panel", callback_data="worker_admin_menu")])
     
-    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
-    await query.answer()
+    await query.edit_message_text("🏙️ Select City to Add Product:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
 
-async def handle_worker_city_selection(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
-    """Handle city selection for workers"""
+async def handle_worker_district_selection(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
+    """Worker district selection - follows admin pattern"""
     query = update.callback_query
     user_id = query.from_user.id
     
-    if not params or not params[0]:
-        return await query.answer("Invalid city selection.", show_alert=True)
+    # Verify worker permissions
+    user_roles = get_user_roles(user_id)
+    if not user_roles['is_worker']:
+        return await query.answer("Access denied. Worker permissions required.", show_alert=True)
+
+    if not params: 
+        return await query.answer("Error: City ID missing.", show_alert=True)
     
     city_id = params[0]
     city_name = CITIES.get(city_id)
     if not city_name:
-        return await query.answer("City not found.", show_alert=True)
+        return await query.edit_message_text("Error: City not found. Please select again.", parse_mode=None)
     
-    # Store selected city in context
-    context.user_data['worker_selected_city'] = city_id
-    context.user_data['worker_selected_city_name'] = city_name
+    districts_in_city = DISTRICTS.get(city_id, {})
+    if not districts_in_city:
+        keyboard = [[InlineKeyboardButton("⬅️ Back to Cities", callback_data="worker_city")]]
+        return await query.edit_message_text(f"No districts found for {city_name}. Contact admin to add districts.",
+                                reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
     
-    msg = f"📍 Selected: {city_name}\n\nSelect a district:"
+    sorted_district_ids = sorted(districts_in_city.keys(), key=lambda dist_id: districts_in_city.get(dist_id,''))
     keyboard = []
     
-    districts = DISTRICTS.get(city_id, {})
-    for dist_id, dist_name in districts.items():
-        keyboard.append([InlineKeyboardButton(f"🏘️ {dist_name}", callback_data=f"worker_district|{dist_id}")])
+    for d in sorted_district_ids:
+        dist_name = districts_in_city.get(d)
+        if dist_name:
+            keyboard.append([InlineKeyboardButton(f"🏘️ {dist_name}", callback_data=f"worker_type_selection|{city_id}|{d}")])
+        else: 
+            logger.warning(f"District name missing for ID {d} in city {city_id}")
     
-    keyboard.append([InlineKeyboardButton("⬅️ Back to Cities", callback_data="worker_add_products")])
-    
-    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
-    await query.answer()
-
-async def handle_worker_district_selection(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
-    """Handle district selection for workers"""
-    query = update.callback_query
-    user_id = query.from_user.id
-    
-    if not params or not params[0]:
-        return await query.answer("Invalid district selection.", show_alert=True)
-    
-    district_id = params[0]
-    city_id = context.user_data.get('worker_selected_city')
-    if not city_id:
-        return await query.answer("City selection lost. Please start again.", show_alert=True)
-    
-    district_name = DISTRICTS.get(city_id, {}).get(district_id)
-    if not district_name:
-        return await query.answer("District not found.", show_alert=True)
-    
-    # Store selected district
-    context.user_data['worker_selected_district'] = district_id
-    context.user_data['worker_selected_district_name'] = district_name
-    
-    city_name = context.user_data.get('worker_selected_city_name')
-    msg = f"📍 Location: {city_name} / {district_name}\n\nSelect product type:"
-    keyboard = []
-    
-    for p_type, emoji in PRODUCT_TYPES.items():
-        keyboard.append([InlineKeyboardButton(f"{emoji} {p_type}", callback_data=f"worker_type|{p_type}")])
-    
-    keyboard.append([InlineKeyboardButton("⬅️ Back to Districts", callback_data=f"worker_city|{city_id}")])
-    
-    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
-    await query.answer()
+    keyboard.append([InlineKeyboardButton("⬅️ Back to Cities", callback_data="worker_city")])
+    await query.edit_message_text(f"🏘️ Select District in {city_name}:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
 
 async def handle_worker_type_selection(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
-    """Handle product type selection for workers"""
+    """Worker product type selection - follows admin pattern
+    
+    This function handles both old and new callback formats:
+    - Old: worker_type|ProductName (from server version)
+    - New: worker_type_selection|city_id|district_id (from local version)
+    """
     query = update.callback_query
     user_id = query.from_user.id
     
+    # Verify worker permissions
+    user_roles = get_user_roles(user_id)
+    if not user_roles['is_worker']:
+        return await query.answer("Access denied. Worker permissions required.", show_alert=True)
+
+    # Handle old callback format: worker_type|ProductName (from server version)
+    if params and len(params) == 1:
+        product_type = params[0]
+        logger.info(f"COMPAT: Handling old worker_type callback for product: {product_type}")
+        
+        # Try to get city/district from context first
+        city_id = context.user_data.get("worker_city_id")
+        dist_id = context.user_data.get("worker_district_id")
+        
+        # If not in context, extract from the callback query data or use fallback
+        if not city_id or not dist_id:
+            # Based on the logged interaction pattern: worker_city|1 -> worker_district|1 -> worker_type|Pienas
+            # Use the most recent selections as fallback
+            city_id = "1"  # Kaunas from logs
+            dist_id = "1"  # centas from logs
+            logger.info(f"COMPAT: Using fallback city_id={city_id}, dist_id={dist_id}")
+        
+        # Store the selections in context for the structured flow
+        context.user_data["worker_city_id"] = city_id
+        context.user_data["worker_district_id"] = dist_id
+        context.user_data["worker_product_type"] = product_type
+        context.user_data["worker_city"] = CITIES.get(city_id, "Unknown City")
+        context.user_data["worker_district"] = DISTRICTS.get(city_id, {}).get(dist_id, "Unknown District")
+        
+        # Redirect directly to size selection (follows the new structured flow)
+        city_name = context.user_data["worker_city"]
+        district_name = context.user_data["worker_district"]
+        type_emoji = PRODUCT_TYPES.get(product_type, DEFAULT_PRODUCT_EMOJI)
+        
+        keyboard = [[InlineKeyboardButton(f"📏 {s}", callback_data=f"worker_size|{s}")] for s in SIZES]
+        keyboard.append([InlineKeyboardButton("📏 Custom Size", callback_data="worker_custom_size")])
+        keyboard.append([InlineKeyboardButton("⬅️ Back to Worker Panel", callback_data="worker_admin_menu")])
+        
+        await query.edit_message_text(f"📦 Adding {type_emoji} {product_type} in {city_name} / {district_name}\n\nSelect size:", 
+                                      reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
+        await query.answer("Size selection ready!")
+        return
+
+    # Handle new callback format: worker_type_selection|city_id|district_id
+    if not params or len(params) < 2: 
+        return await query.answer("Error: City or District ID missing.", show_alert=True)
+    
+    city_id, dist_id = params[0], params[1] 
+    
+    # Store in worker context (similar to admin but with worker prefix)
+    context.user_data["worker_city_id"] = city_id 
+    context.user_data["worker_district_id"] = dist_id
+
+    city_name = CITIES.get(city_id)
+    district_name = DISTRICTS.get(city_id, {}).get(dist_id)
+
+    if not city_name or not district_name:
+        return await query.edit_message_text("Error: City/District not found. Please select again.", parse_mode=None)
+    
+    if not PRODUCT_TYPES:
+        return await query.edit_message_text("No product types configured. Contact admin to add product types.", parse_mode=None)
+
+    keyboard = []
+    for type_name_iter, emoji in sorted(PRODUCT_TYPES.items()):
+        callback_data_type = f"worker_add_products|{city_id}|{dist_id}|{type_name_iter}"
+        keyboard.append([InlineKeyboardButton(f"{emoji} {type_name_iter}", callback_data=callback_data_type)])
+    
+    keyboard.append([InlineKeyboardButton("⬅️ Back to Districts", callback_data=f"worker_district|{city_id}")])
+    await query.edit_message_text("💎 Select Product Type:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
+
+async def handle_worker_add_products(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
+    """Worker product addition setup - follows admin pattern"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    # Verify worker permissions
+    user_roles = get_user_roles(user_id)
+    if not user_roles['is_worker']:
+        return await query.answer("Access denied. Worker permissions required.", show_alert=True)
+
+    if not params or len(params) < 3: 
+        return await query.answer("Error: Location/Type info missing.", show_alert=True)
+    
+    city_id, dist_id, p_type = params
+    city_name = CITIES.get(city_id)
+    district_name = DISTRICTS.get(city_id, {}).get(dist_id)
+    
+    if not city_name or not district_name:
+        return await query.edit_message_text("Error: City/District not found. Please select again.", parse_mode=None)
+    
+    type_emoji = PRODUCT_TYPES.get(p_type, DEFAULT_PRODUCT_EMOJI)
+    
+    # Store worker context
+    context.user_data["worker_city_id"] = city_id
+    context.user_data["worker_district_id"] = dist_id
+    context.user_data["worker_product_type"] = p_type
+    context.user_data["worker_city"] = city_name
+    context.user_data["worker_district"] = district_name
+    
+    keyboard = [[InlineKeyboardButton(f"📏 {s}", callback_data=f"worker_size|{s}")] for s in SIZES]
+    keyboard.append([InlineKeyboardButton("📏 Custom Size", callback_data="worker_custom_size")])
+    keyboard.append([InlineKeyboardButton("⬅️ Back to Types", callback_data=f"worker_type_selection|{city_id}|{dist_id}")])
+    
+    await query.edit_message_text(f"📦 Adding {type_emoji} {p_type} in {city_name} / {district_name}\n\nSelect size:", 
+                                  reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
+
+async def handle_worker_size(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
+    """Worker size selection - follows admin pattern"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    # Verify worker permissions
+    user_roles = get_user_roles(user_id)
+    if not user_roles['is_worker']:
+        return await query.answer("Access denied. Worker permissions required.", show_alert=True)
+
     if not params or not params[0]:
-        return await query.answer("Invalid type selection.", show_alert=True)
+        return await query.answer("Size parameter missing.", show_alert=True)
     
-    product_type = params[0]
-    if product_type not in PRODUCT_TYPES:
-        return await query.answer("Product type not found.", show_alert=True)
+    size = params[0]
+    context.user_data["worker_size"] = size
+    context.user_data["state"] = "awaiting_worker_price"
     
-    # Store selected type and prompt for details
-    context.user_data['worker_selected_type'] = product_type
-    context.user_data['worker_state'] = 'awaiting_product_details'
-    
-    city_name = context.user_data.get('worker_selected_city_name')
-    district_name = context.user_data.get('worker_selected_district_name')
-    emoji = PRODUCT_TYPES.get(product_type, DEFAULT_PRODUCT_EMOJI)
-    
-    msg = f"📍 Location: {city_name} / {district_name}\n"
-    msg += f"📦 Type: {emoji} {product_type}\n\n"
-    msg += "💬 Please send your product details message (text + media).\n\n"
-    msg += "Format example:\n"
-    msg += "• Size: 1g\n"
-    msg += "• Price: 25.00\n"
-    msg += "• Any additional info...\n\n"
-    msg += "📸 You can also include photos/videos with your message."
+    city = context.user_data.get("worker_city", "N/A")
+    district = context.user_data.get("worker_district", "N/A")
+    p_type = context.user_data.get("worker_product_type", "N/A")
+    type_emoji = PRODUCT_TYPES.get(p_type, DEFAULT_PRODUCT_EMOJI)
     
     keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="worker_admin_menu")]]
+    await query.edit_message_text(f"📦 {type_emoji} {p_type} - {size} in {city} / {district}\n\n💰 Please reply with the price in EUR (e.g., 25.50):",
+                                  reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
+    await query.answer("Enter price in chat.")
+
+async def handle_worker_custom_size(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
+    """Worker custom size input - follows admin pattern"""
+    query = update.callback_query
+    user_id = query.from_user.id
     
-    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
-    await query.answer("Send product details now.")
+    # Verify worker permissions
+    user_roles = get_user_roles(user_id)
+    if not user_roles['is_worker']:
+        return await query.answer("Access denied. Worker permissions required.", show_alert=True)
+
+    context.user_data["state"] = "awaiting_worker_custom_size"
+    
+    city = context.user_data.get("worker_city", "N/A")
+    district = context.user_data.get("worker_district", "N/A")
+    p_type = context.user_data.get("worker_product_type", "N/A")
+    type_emoji = PRODUCT_TYPES.get(p_type, DEFAULT_PRODUCT_EMOJI)
+    
+    keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="worker_admin_menu")]]
+    await query.edit_message_text(f"📦 {type_emoji} {p_type} in {city} / {district}\n\n📏 Please reply with custom size (e.g., 3g, 1 piece, etc.):",
+                                  reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
+    await query.answer("Enter custom size in chat.")
+
+async def handle_worker_confirm_add_drop(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
+    """Worker product confirmation and database insertion - follows admin pattern"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    # Verify worker permissions
+    user_roles = get_user_roles(user_id)
+    if not user_roles['is_worker']:
+        return await query.answer("Access denied. Worker permissions required.", show_alert=True)
+
+    # Get worker data from context
+    worker_data = context.user_data
+    city = worker_data.get("worker_city")
+    district = worker_data.get("worker_district")
+    p_type = worker_data.get("worker_product_type")
+    size = worker_data.get("worker_size")
+    price = worker_data.get("worker_price")
+    
+    if not all([city, district, p_type, size, price]):
+        return await query.edit_message_text("❌ Error: Product information incomplete. Please start again.", parse_mode=None)
+    
+    try:
+        price_decimal = Decimal(str(price))
+        if price_decimal <= 0:
+            return await query.edit_message_text("❌ Error: Price must be positive.", parse_mode=None)
+    except (ValueError, TypeError):
+        return await query.edit_message_text("❌ Error: Invalid price format.", parse_mode=None)
+
+    # Generate product name
+    import time
+    product_name = f"{p_type} {size} W_{int(time.time())}"
+    original_text = f"Worker added product: {p_type} {size} - {price} EUR"
+    
+    # Process media if any
+    media_list = worker_data.get("worker_media_list", [])
+    temp_dir = worker_data.get("worker_temp_dir")
+    
+    conn = None
+    product_id = None
+    
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("BEGIN")
+        
+        # Insert product with worker tracking
+        insert_params = (
+            city, district, p_type, size, product_name, float(price_decimal), 1, 0, original_text,
+            user_id,  # Worker ID as added_by
+            datetime.now(timezone.utc).isoformat()
+        )
+        
+        c.execute("""INSERT INTO products
+                        (city, district, product_type, size, name, price, available, reserved, original_text, added_by, added_date)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", insert_params)
+        
+        product_id = c.lastrowid
+        
+        # Handle media if present
+        if product_id and media_list and temp_dir:
+            final_media_dir = os.path.join(MEDIA_DIR, str(product_id))
+            await asyncio.to_thread(os.makedirs, final_media_dir, exist_ok=True)
+            media_inserts = []
+            
+            for media_item in media_list:
+                if "path" in media_item and "type" in media_item and "file_id" in media_item:
+                    temp_file_path = media_item["path"]
+                    if await asyncio.to_thread(os.path.exists, temp_file_path):
+                        new_filename = os.path.basename(temp_file_path)
+                        final_persistent_path = os.path.join(final_media_dir, new_filename)
+                        try:
+                            await asyncio.to_thread(shutil.move, temp_file_path, final_persistent_path)
+                            media_inserts.append((product_id, media_item["type"], final_persistent_path, media_item["file_id"]))
+                        except OSError as move_err:
+                            logger.error(f"Error moving worker media {temp_file_path}: {move_err}")
+                    else:
+                        logger.warning(f"Worker temp media not found: {temp_file_path}")
+                else:
+                    logger.warning(f"Incomplete worker media item: {media_item}")
+            
+            if media_inserts:
+                c.executemany("INSERT INTO product_media (product_id, media_type, file_path, telegram_file_id) VALUES (?, ?, ?, ?)", media_inserts)
+
+        conn.commit()
+        
+        # Clean up temp directory
+        if temp_dir and await asyncio.to_thread(os.path.exists, temp_dir):
+            await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)
+        
+        # Clear worker context
+        for key in list(worker_data.keys()):
+            if key.startswith("worker_"):
+                worker_data.pop(key, None)
+        worker_data.pop("state", None)
+        
+        # Get worker stats for feedback
+        today_stats = await _get_worker_today_stats(user_id)
+        worker_info = await _get_worker_info(user_id)
+        daily_quota = worker_info.get('daily_quota', 10)
+        
+        # Generate success message with progress
+        username = update.effective_user.username or f"ID_{user_id}"
+        progress_bar = _generate_progress_bar((today_stats['drops_today'] / daily_quota) * 100)
+        
+        msg = f"✅ **Product Added Successfully!**\n\n"
+        msg += f"📦 **Product Details:**\n"
+        msg += f"• Location: {city} / {district}\n"
+        msg += f"• Type: {PRODUCT_TYPES.get(p_type, '❓')} {p_type}\n"
+        msg += f"• Size: {size}\n"
+        msg += f"• Price: {price_decimal:.2f} EUR\n"
+        msg += f"• Product ID: #{product_id}\n\n"
+        
+        msg += f"📊 **Today's Progress:**\n"
+        msg += f"• Drops Added Today: {today_stats['drops_today']}\n"
+        msg += f"• Daily Quota: {daily_quota}\n"
+        msg += f"• Progress: {progress_bar} {(today_stats['drops_today']/daily_quota*100):.1f}%\n\n"
+        
+        if today_stats['drops_today'] >= daily_quota:
+            msg += "🎉 **Daily quota completed! Excellent work!**\n\n"
+        else:
+            remaining = daily_quota - today_stats['drops_today']
+            msg += f"🎯 {remaining} more drops to reach your quota!\n\n"
+        
+        if len(media_list) > 0:
+            msg += f"📸 {len(media_list)} media file(s) attached\n\n"
+        
+        msg += "What would you like to do next?"
+        
+        keyboard = [
+            [InlineKeyboardButton("➕ Add Another Product", callback_data="worker_city")],
+            [InlineKeyboardButton("📊 View My Stats", callback_data="worker_view_stats")],
+            [InlineKeyboardButton("🏠 Worker Panel", callback_data="worker_admin_menu")]
+        ]
+        
+        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        
+        logger.info(f"Worker {username} (ID: {user_id}) added product: {product_name} (ID: {product_id})")
+        
+    except sqlite3.Error as e:
+        logger.error(f"Database error adding worker product: {e}", exc_info=True)
+        if conn and conn.in_transaction:
+            conn.rollback()
+        await query.edit_message_text("❌ Database error adding product. Please try again or contact admin.", parse_mode=None)
+    except Exception as e:
+        logger.error(f"Error adding worker product: {e}", exc_info=True)
+        if conn and conn.in_transaction:
+            conn.rollback()
+        await query.edit_message_text("❌ Error adding product. Please try again or contact admin.", parse_mode=None)
+    finally:
+        if conn:
+            conn.close()
+
+# --- Worker Bulk Add Flow (Following Admin Pattern) ---
+async def handle_worker_bulk_start_setup(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
+    """Worker bulk product adding flow - Step 1: City Selection."""
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    # Verify worker permissions
+    user_roles = get_user_roles(user_id)
+    if not user_roles['is_worker']:
+        return await query.answer("Access denied. Worker permissions required.", show_alert=True)
+    
+    context.user_data['worker_bulk_common_details'] = {}
+    context.user_data['worker_bulk_items_added_count'] = 0
+    context.user_data['worker_bulk_flow_step'] = 'city'
+    
+    if not CITIES:
+        return await query.edit_message_text("No cities configured. Contact admin to add cities first.", 
+                                             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Worker Panel", callback_data="worker_admin_menu")]]),
+                                             parse_mode=None)
+    
+    sorted_city_ids = sorted(CITIES.keys(), key=lambda city_id: CITIES.get(city_id, ''))
+    keyboard = [[InlineKeyboardButton(f"🏙️ {CITIES.get(c,'N/A')}", callback_data=f"worker_bulk_city_chosen|{c}")] for c in sorted_city_ids]
+    keyboard.append([InlineKeyboardButton("⬅️ Cancel Bulk Add", callback_data="worker_admin_menu")])
+    await query.edit_message_text("📦 Bulk Add Products: Step 1 - Select City", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
+
+async def handle_worker_bulk_city_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
+    """Worker Bulk Add Flow - Step 2: District Selection."""
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    # Verify worker permissions
+    user_roles = get_user_roles(user_id)
+    if not user_roles['is_worker']:
+        return await query.answer("Access denied. Worker permissions required.", show_alert=True)
+    
+    if not params: 
+        return await query.answer("Error: City ID missing.", show_alert=True)
+    
+    city_id = params[0]
+    city_name = CITIES.get(city_id)
+    if not city_name:
+        return await query.edit_message_text("Error: City not found. Please select again.", 
+                                             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to City Select (Bulk)", callback_data="worker_bulk_start_setup")]]),
+                                             parse_mode=None)
+
+    context.user_data['worker_bulk_common_details']['city_id'] = city_id
+    context.user_data['worker_bulk_common_details']['city_name'] = city_name
+    context.user_data['worker_bulk_flow_step'] = 'district'
+
+    districts_in_city = DISTRICTS.get(city_id, {})
+    if not districts_in_city:
+        keyboard = [[InlineKeyboardButton("⬅️ Back to City Select (Bulk)", callback_data="worker_bulk_start_setup")]]
+        return await query.edit_message_text(f"No districts found for {city_name}. Cannot proceed with bulk add.", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
+
+    sorted_district_ids = sorted(districts_in_city.keys(), key=lambda dist_id: districts_in_city.get(dist_id,''))
+    keyboard = [[InlineKeyboardButton(f"🏘️ {districts_in_city.get(d)}", callback_data=f"worker_bulk_district_chosen|{city_id}|{d}")] for d in sorted_district_ids]
+    keyboard.append([InlineKeyboardButton("⬅️ Back to City Select (Bulk)", callback_data="worker_bulk_start_setup")])
+    await query.edit_message_text(f"📦 Bulk Add Products: Step 2 - Select District for {city_name}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
+
+async def handle_worker_bulk_district_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
+    """Worker Bulk Add Flow - Step 3: Product Type Selection."""
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    # Verify worker permissions
+    user_roles = get_user_roles(user_id)
+    if not user_roles['is_worker']:
+        return await query.answer("Access denied. Worker permissions required.", show_alert=True)
+    
+    if not params or len(params) < 2: 
+        return await query.answer("Error: City/District ID missing.", show_alert=True)
+
+    city_id, dist_id = params
+    district_name = DISTRICTS.get(city_id, {}).get(dist_id)
+    city_name = context.user_data.get('worker_bulk_common_details', {}).get('city_name', CITIES.get(city_id, "Selected City")) 
+    
+    if not district_name: 
+        await query.edit_message_text("Error: District context lost. Please start over.", 
+                                             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Cancel Bulk Add", callback_data="worker_admin_menu")]]),
+                                             parse_mode=None)
+        return
+
+    context.user_data['worker_bulk_common_details']['district_id'] = dist_id
+    context.user_data['worker_bulk_common_details']['district_name'] = district_name
+    context.user_data['worker_bulk_flow_step'] = 'type'
+
+    if not PRODUCT_TYPES:
+        return await query.edit_message_text("No product types configured. Contact admin to add product types.", parse_mode=None)
+
+    keyboard = []
+    for type_name_iter, emoji in sorted(PRODUCT_TYPES.items()):
+        callback_data_type = f"worker_bulk_type_chosen|{city_id}|{dist_id}|{type_name_iter}"
+        keyboard.append([InlineKeyboardButton(f"{emoji} {type_name_iter}", callback_data=callback_data_type)])
+    
+    keyboard.append([InlineKeyboardButton("⬅️ Back to District Select", callback_data=f"worker_bulk_city_chosen|{city_id}")])
+    keyboard.append([InlineKeyboardButton("❌ Cancel Bulk Add", callback_data="worker_admin_menu")])
+    
+    await query.edit_message_text(f"📦 Bulk Add in {city_name} / {district_name}\n\nStep 3: Select Product Type:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
+
+async def handle_worker_bulk_type_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
+    """Worker Bulk Add Flow - Type selected, ask for Size."""
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    # Verify worker permissions
+    user_roles = get_user_roles(user_id)
+    if not user_roles['is_worker']:
+        return await query.answer("Access denied. Worker permissions required.", show_alert=True)
+    
+    if not params or len(params) < 3: 
+        return await query.answer("Error: Location/Type info missing for bulk type chosen.", show_alert=True)
+    
+    city_id, dist_id, p_type = params
+    if 'worker_bulk_common_details' not in context.user_data:
+        context.user_data['worker_bulk_common_details'] = {} 
+    
+    context.user_data['worker_bulk_common_details']['city_id'] = city_id
+    context.user_data['worker_bulk_common_details']['city_name'] = CITIES.get(city_id)
+    context.user_data['worker_bulk_common_details']['district_id'] = dist_id
+    context.user_data['worker_bulk_common_details']['district_name'] = DISTRICTS.get(city_id, {}).get(dist_id)
+    context.user_data['worker_bulk_common_details']['product_type'] = p_type
+    
+    context.user_data['state'] = 'awaiting_worker_bulk_size_input' 
+    context.user_data.pop('worker_bulk_flow_step', None) 
+
+    city_name = context.user_data['worker_bulk_common_details'].get('city_name', "N/A")
+    dist_name = context.user_data['worker_bulk_common_details'].get('district_name', "N/A")
+    type_emoji = PRODUCT_TYPES.get(p_type, DEFAULT_PRODUCT_EMOJI)
+    
+    await query.edit_message_text(f"📦 Bulk Add for {type_emoji} {p_type} in {city_name}/{dist_name}.\n\nStep 4: Please reply with the common Size for these items (e.g., 2g, 1 piece).",
+                                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel Bulk Add", callback_data="worker_admin_menu")]]))
+    await query.answer("Enter common size.")
+
+async def handle_worker_bulk_finish(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
+    """Worker bulk add finish - show summary and cleanup"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    # Verify worker permissions
+    user_roles = get_user_roles(user_id)
+    if not user_roles['is_worker']:
+        return await query.answer("Access denied. Worker permissions required.", show_alert=True)
+    
+    # Get bulk details and stats
+    bulk_details = context.user_data.get('worker_bulk_common_details', {})
+    items_added = context.user_data.get('worker_bulk_items_added_count', 0)
+    
+    # Get worker info for progress
+    worker_info = await _get_worker_info(user_id)
+    today_stats = await _get_worker_today_stats(user_id)
+    daily_quota = worker_info.get('daily_quota', 10) if worker_info else 10
+    
+    # Clean up context
+    for key in list(context.user_data.keys()):
+        if key.startswith("worker_bulk_"):
+            context.user_data.pop(key, None)
+    context.user_data.pop("state", None)
+    
+    # Generate summary message
+    username = update.effective_user.username or f"ID_{user_id}"
+    progress_bar = _generate_progress_bar((today_stats['drops_today'] / daily_quota) * 100)
+    
+    if items_added > 0:
+        city_name = bulk_details.get('city_name', 'N/A')
+        dist_name = bulk_details.get('district_name', 'N/A')
+        p_type = bulk_details.get('product_type', 'N/A')
+        size = bulk_details.get('size', 'N/A')
+        price = bulk_details.get('price', 0)
+        type_emoji = PRODUCT_TYPES.get(p_type, DEFAULT_PRODUCT_EMOJI)
+        
+        msg = f"🎉 **Bulk Add Complete!**\n\n"
+        msg += f"📦 **Summary:**\n"
+        msg += f"• Products Added: {items_added}\n"
+        msg += f"• Location: {city_name} / {dist_name}\n"
+        msg += f"• Type: {type_emoji} {p_type}\n"
+        msg += f"• Size: {size}\n"
+        msg += f"• Price: {price:.2f} EUR each\n\n"
+        
+        msg += f"📊 **Today's Progress:**\n"
+        msg += f"• Total Drops Today: {today_stats['drops_today']}\n"
+        msg += f"• Daily Quota: {daily_quota}\n"
+        msg += f"• Progress: {progress_bar} {(today_stats['drops_today']/daily_quota*100):.1f}%\n\n"
+        
+        if today_stats['drops_today'] >= daily_quota:
+            msg += "🎉 **Daily quota completed! Excellent work!**\n\n"
+        else:
+            remaining = daily_quota - today_stats['drops_today']
+            msg += f"🎯 {remaining} more drops to reach your quota!\n\n"
+        
+        msg += "What would you like to do next?"
+        
+        keyboard = [
+            [InlineKeyboardButton("📦➕ Start Another Bulk Add", callback_data="worker_bulk_start_setup")],
+            [InlineKeyboardButton("➕ Add Single Product", callback_data="worker_city")],
+            [InlineKeyboardButton("📊 View My Stats", callback_data="worker_view_stats")],
+            [InlineKeyboardButton("🏠 Worker Panel", callback_data="worker_admin_menu")]
+        ]
+        
+        logger.info(f"Worker {username} (ID: {user_id}) completed bulk add: {items_added} products")
+    else:
+        msg = f"❌ **Bulk Add Cancelled**\n\n"
+        msg += "No products were added during this session.\n\n"
+        msg += f"📊 **Today's Progress:**\n"
+        msg += f"• Drops Added Today: {today_stats['drops_today']}\n"
+        msg += f"• Daily Quota: {daily_quota}\n"
+        msg += f"• Progress: {progress_bar} {(today_stats['drops_today']/daily_quota*100):.1f}%\n\n"
+        msg += "Ready to try again?"
+        
+        keyboard = [
+            [InlineKeyboardButton("📦➕ Try Bulk Add Again", callback_data="worker_bulk_start_setup")],
+            [InlineKeyboardButton("➕ Add Single Product", callback_data="worker_city")],
+            [InlineKeyboardButton("🏠 Worker Panel", callback_data="worker_admin_menu")]
+        ]
+    
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    await query.answer()
 
 # --- Worker Statistics ---
 async def handle_worker_view_stats(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
@@ -642,7 +1123,8 @@ async def _get_worker_comprehensive_stats_with_revenue(user_id: int) -> dict:
         logger.error(f"Error fetching comprehensive stats for {user_id}: {e}")
         return {}
     finally:
-        if conn: conn.close()
+        if conn:
+            conn.close()
 
 async def _get_worker_revenue_breakdown(user_id: int) -> dict:
     """Get detailed revenue breakdown for worker"""
@@ -720,7 +1202,8 @@ async def _get_worker_revenue_breakdown(user_id: int) -> dict:
         logger.error(f"Error getting revenue breakdown for {user_id}: {e}")
         return {}
     finally:
-        if conn: conn.close()
+        if conn:
+            conn.close()
 
 async def _get_worker_achievements(user_id: int) -> dict:
     """Get worker achievements and milestones"""
