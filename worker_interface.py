@@ -773,14 +773,11 @@ async def _add_single_worker_bulk_item_to_db(context: ContextTypes.DEFAULT_TYPE,
     import os
     import time
     
-    current_bulk_session_item_index = context.user_data.get('worker_bulk_items_added_count', 0)
-    
     temp_dir = None
     conn = None
     product_id = None
     
     try:
-        # Find or create city and district IDs
         conn = get_db_connection()
         c = conn.cursor()
         
@@ -802,8 +799,7 @@ async def _add_single_worker_bulk_item_to_db(context: ContextTypes.DEFAULT_TYPE,
         else:
             district_id = district_result[0]
         
-        # Insert product
-        type_emoji = PRODUCT_TYPES.get(product_type, DEFAULT_PRODUCT_EMOJI)
+        # Insert product using city/district names (not IDs) as per products table schema
         c.execute("""
             INSERT INTO products (city, district, product_type, size, name, price, available, added_by, original_text, added_date)
             VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, CURRENT_TIMESTAMP)
@@ -812,53 +808,44 @@ async def _add_single_worker_bulk_item_to_db(context: ContextTypes.DEFAULT_TYPE,
         product_id = c.lastrowid
         
         # Handle media if present
-        media_list_for_db = []
-        if media_info_list:
-            temp_dir_base = await asyncio.to_thread(tempfile.mkdtemp, prefix="worker_bulk_item_")
+        if media_info_list and product_id:
+            temp_dir_base = await asyncio.to_thread(tempfile.mkdtemp, prefix="worker_bulk_")
             temp_dir = os.path.join(temp_dir_base, str(int(time.time()*1000)))
             await asyncio.to_thread(os.makedirs, temp_dir, exist_ok=True)
 
-            for i, media_info_item in enumerate(media_info_list):
-                m_type = media_info_item['type']
-                file_id_tg = media_info_item['file_id']
+            media_inserts = []
+            for i, media_info in enumerate(media_info_list):
+                m_type = media_info['type']
+                file_id = media_info['file_id']
                 file_extension = ".jpg" if m_type == "photo" else ".mp4" if m_type in ["video", "gif"] else ".dat"
-                temp_file_name = f"media_{i}_{file_id_tg}{file_extension}"
+                temp_file_name = f"media_{i}_{file_id}{file_extension}"
                 temp_file_path = os.path.join(temp_dir, temp_file_name)
                 
                 try:
-                    file_obj = await context.bot.get_file(file_id_tg)
+                    file_obj = await context.bot.get_file(file_id)
                     await file_obj.download_to_drive(custom_path=temp_file_path)
+                    
                     if await asyncio.to_thread(os.path.exists, temp_file_path) and await asyncio.to_thread(os.path.getsize, temp_file_path) > 0:
-                        media_list_for_db.append({"type": m_type, "path": temp_file_path, "file_id": file_id_tg})
+                        # Move to final location
+                        final_media_dir = os.path.join(MEDIA_DIR, str(product_id))
+                        await asyncio.to_thread(os.makedirs, final_media_dir, exist_ok=True)
+                        
+                        final_path = os.path.join(final_media_dir, temp_file_name)
+                        await asyncio.to_thread(shutil.move, temp_file_path, final_path)
+                        media_inserts.append((product_id, m_type, final_path, file_id))
                 except Exception as e:
-                    logger.error(f"Error downloading worker bulk media ({file_id_tg}): {e}")
+                    logger.error(f"Error processing worker bulk media {file_id}: {e}")
                     pass
-
-        # Move media to final location and insert records
-        if product_id and media_list_for_db and temp_dir:
-            final_media_dir = os.path.join(MEDIA_DIR, str(product_id))
-            await asyncio.to_thread(os.makedirs, final_media_dir, exist_ok=True)
-            media_inserts = []
             
-            for media_item_db in media_list_for_db:
-                temp_p = media_item_db["path"]
-                if await asyncio.to_thread(os.path.exists, temp_p):
-                    new_fname = os.path.basename(temp_p)
-                    final_p_path = os.path.join(final_media_dir, new_fname)
-                    try:
-                        await asyncio.to_thread(shutil.move, temp_p, final_p_path)
-                        media_inserts.append((product_id, media_item_db["type"], final_p_path, media_item_db["file_id"]))
-                    except OSError as move_err:
-                        logger.error(f"Error moving worker bulk media {temp_p}: {move_err}")
-            
+            # Insert media records
             if media_inserts:
                 c.executemany("INSERT INTO product_media (product_id, media_type, file_path, telegram_file_id) VALUES (?, ?, ?, ?)", media_inserts)
         
-        # Log worker action
+        # Log worker action in worker_actions table
         c.execute("""
             INSERT INTO worker_actions (worker_id, action_type, product_id, details, quantity, timestamp)
-            VALUES (?, 'add_bulk_forwarded', ?, ?, ?, CURRENT_TIMESTAMP)
-        """, (worker_id, product_id, f"Added {product_type} via forwarded message in {city_name}/{district_name}", 1))
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """, (worker_id, 'add_bulk_forwarded', product_id, f"Added {product_type} via forwarded message in {city_name}/{district_name}", 1))
         
         conn.commit()
         logger.info(f"Worker Bulk Added: Product {product_id} by worker {worker_id} via forwarded message.")
