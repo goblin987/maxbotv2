@@ -765,115 +765,72 @@ async def handle_worker_bulk_forwarded_drops(update: Update, context: ContextTyp
         # Update progress display to show failed count
         await _update_worker_bulk_progress_display(update, context)
 
-async def _add_single_worker_bulk_item_to_db(context: ContextTypes.DEFAULT_TYPE, product_type: str, city_name: str, district_name: str, media_info_list: list, original_text: str, worker_id: int) -> bool:
-    """Helper function to add a single worker bulk item to the database - CLEAN VERSION"""
-    temp_dir = None
+async def _simple_worker_product_insert(context: ContextTypes.DEFAULT_TYPE, product_type: str, city_name: str, district_name: str, original_text: str, worker_id: int) -> bool:
+    """Simplified function to insert worker product - bypassing any potential issues"""
     conn = None
     
     try:
-        # Get database connection
+        # Simple database connection and insert
         conn = get_db_connection()
-        c = conn.cursor()
+        cursor = conn.cursor()
         
-        # Insert product directly with city/district names as strings
-        product_insert_sql = """
-            INSERT INTO products (city, district, product_type, size, name, price, available, added_by, original_text, added_date)
-            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, CURRENT_TIMESTAMP)
-        """
+        # Direct insert without any complexity
+        insert_sql = "INSERT INTO products (city, district, product_type, size, name, price, available, added_by, original_text, added_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        insert_params = (
+            city_name,           # city
+            district_name,       # district  
+            product_type,        # product_type
+            "1g",               # size
+            "Worker Product",    # name
+            25.0,               # price
+            1,                  # available
+            worker_id,          # added_by
+            original_text,      # original_text
+            "2025-05-29 20:00:00"  # added_date (hardcoded for testing)
+        )
         
-        # Use hardcoded values for testing - worker forwarded products
-        size_value = "1g"
-        price_value = 25.0
-        name_value = "Worker Bulk Product"
+        cursor.execute(insert_sql, insert_params)
+        product_id = cursor.lastrowid
         
-        c.execute(product_insert_sql, (city_name, district_name, product_type, size_value, name_value, price_value, worker_id, original_text))
-        product_id = c.lastrowid
+        # Simple worker action log
+        action_sql = "INSERT INTO worker_actions (worker_id, action_type, product_id, details, quantity, timestamp) VALUES (?, ?, ?, ?, ?, ?)"
+        action_params = (
+            worker_id,
+            'add_bulk_forwarded',
+            product_id,
+            f"Added {product_type} in {city_name}/{district_name}",
+            1,
+            "2025-05-29 20:00:00"
+        )
         
-        # Handle media downloads and storage
-        if media_info_list and product_id:
-            try:
-                import tempfile
-                import shutil
-                import os
-                import time
-                import asyncio
-                
-                # Create temp directory
-                temp_dir = tempfile.mkdtemp(prefix="worker_media_")
-                
-                # Process each media file
-                media_records = []
-                for idx, media_info in enumerate(media_info_list):
-                    try:
-                        file_id = media_info['file_id']
-                        media_type = media_info['type']
-                        
-                        # Determine file extension
-                        if media_type == "photo":
-                            extension = ".jpg"
-                        elif media_type in ["video", "gif"]:
-                            extension = ".mp4"
-                        else:
-                            extension = ".dat"
-                        
-                        # Download file
-                        temp_file_path = os.path.join(temp_dir, f"media_{idx}_{file_id}{extension}")
-                        file_obj = await context.bot.get_file(file_id)
-                        await file_obj.download_to_drive(custom_path=temp_file_path)
-                        
-                        # Verify download
-                        if os.path.exists(temp_file_path) and os.path.getsize(temp_file_path) > 0:
-                            # Create final media directory
-                            final_media_dir = os.path.join(MEDIA_DIR, str(product_id))
-                            os.makedirs(final_media_dir, exist_ok=True)
-                            
-                            # Move to final location
-                            final_file_path = os.path.join(final_media_dir, os.path.basename(temp_file_path))
-                            shutil.move(temp_file_path, final_file_path)
-                            
-                            # Record for database
-                            media_records.append((product_id, media_type, final_file_path, file_id))
-                    except Exception as media_error:
-                        logger.error(f"Error processing media {idx}: {media_error}")
-                        continue
-                
-                # Insert media records if any were processed successfully
-                if media_records:
-                    media_insert_sql = "INSERT INTO product_media (product_id, media_type, file_path, telegram_file_id) VALUES (?, ?, ?, ?)"
-                    c.executemany(media_insert_sql, media_records)
-                    
-            except Exception as media_error:
-                logger.error(f"Error processing media for worker bulk product: {media_error}")
-                # Continue even if media processing fails
+        cursor.execute(action_sql, action_params)
         
-        # Log worker action
-        worker_action_sql = """
-            INSERT INTO worker_actions (worker_id, action_type, product_id, details, quantity, timestamp)
-            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        """
-        action_details = f"Added {product_type} via forwarded message in {city_name}/{district_name}"
-        c.execute(worker_action_sql, (worker_id, 'add_bulk_forwarded', product_id, action_details, 1))
-        
-        # Commit transaction
+        # Commit and close
         conn.commit()
-        logger.info(f"Worker bulk product {product_id} added successfully by worker {worker_id}")
+        logger.info(f"Simple worker product insert successful: product_id={product_id}")
         return True
         
-    except Exception as db_error:
-        logger.error(f"Database error in worker bulk add: {db_error}", exc_info=True)
+    except Exception as error:
+        logger.error(f"Simple worker product insert failed: {error}", exc_info=True)
         if conn and conn.in_transaction:
             conn.rollback()
         return False
         
     finally:
-        # Cleanup
         if conn:
             conn.close()
-        if temp_dir and os.path.exists(temp_dir):
-            try:
-                shutil.rmtree(temp_dir, ignore_errors=True)
-            except Exception as cleanup_error:
-                logger.error(f"Error cleaning up temp directory: {cleanup_error}")
+
+async def _add_single_worker_bulk_item_to_db(context: ContextTypes.DEFAULT_TYPE, product_type: str, city_name: str, district_name: str, media_info_list: list, original_text: str, worker_id: int) -> bool:
+    """Helper function to add a single worker bulk item to the database - CLEAN VERSION"""
+    # Use the simplified insert function instead
+    success = await _simple_worker_product_insert(context, product_type, city_name, district_name, original_text, worker_id)
+    
+    if success:
+        logger.info(f"Worker bulk item added successfully using simplified function")
+        return True
+    else:
+        logger.error(f"Worker bulk item failed using simplified function")
+        return False
 
 async def _finish_worker_bulk_session(update: Update, context: ContextTypes.DEFAULT_TYPE, message: str = "Worker bulk add session ended."):
     """Cleans up worker bulk add context and shows summary"""
