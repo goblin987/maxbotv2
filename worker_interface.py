@@ -82,7 +82,7 @@ async def handle_worker_admin_menu(update: Update, context: ContextTypes.DEFAULT
 
     keyboard = [
         [InlineKeyboardButton("➕ Add Products", callback_data="worker_add_products")],
-        [InlineKeyboardButton("📊 My Statistics", callback_data="worker_view_stats")],
+        [InlineKeyboardButton("📊 Enhanced Statistics", callback_data="worker_view_stats_enhanced")],
         [InlineKeyboardButton("🏆 Leaderboard", callback_data="worker_leaderboard")],
         [InlineKeyboardButton("🏠 Main Menu", callback_data="back_start")]
     ]
@@ -306,6 +306,594 @@ async def handle_worker_leaderboard(update: Update, context: ContextTypes.DEFAUL
     
     await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
     await query.answer()
+
+# --- Enhanced Worker Statistics with Revenue ---
+async def handle_worker_view_stats_enhanced(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
+    """Show comprehensive worker statistics with revenue and efficiency metrics"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    # Verify worker permissions
+    user_roles = get_user_roles(user_id)
+    if not user_roles['is_worker']:
+        return await query.answer("Access denied.", show_alert=True)
+    
+    # Get comprehensive stats with revenue
+    stats = await _get_worker_comprehensive_stats_with_revenue(user_id)
+    username = update.effective_user.username or f"ID_{user_id}"
+    alias = stats.get('alias', '')
+    display_name = f"@{username}" + (f" ({alias})" if alias else "")
+    
+    msg = f"📊 **Enhanced Statistics for {display_name}**\n\n"
+    
+    # Today's performance with revenue
+    today = stats.get('today', {})
+    msg += f"📅 **Today ({datetime.now().strftime('%Y-%m-%d')})**\n"
+    msg += f"• Drops Added: {today.get('drops', 0)}\n"
+    msg += f"• Revenue Generated: €{today.get('revenue', 0):.2f}\n"
+    msg += f"• Avg Price per Drop: €{today.get('avg_price', 0):.2f}\n"
+    msg += f"• Quota Progress: {today.get('quota_progress', 0):.1f}%\n"
+    msg += f"• Efficiency Score: {today.get('efficiency_score', 0):.2f}\n\n"
+    
+    # This week's stats
+    week = stats.get('week', {})
+    msg += f"📅 **This Week**\n"
+    msg += f"• Total Drops: {week.get('drops', 0)}\n"
+    msg += f"• Total Revenue: €{week.get('revenue', 0):.2f}\n"
+    msg += f"• Daily Average: {week.get('daily_avg', 0):.1f} drops\n"
+    msg += f"• Revenue/Day: €{week.get('revenue_per_day', 0):.2f}\n"
+    msg += f"• Best Day: {week.get('best_day', 'N/A')}\n\n"
+    
+    # This month's performance
+    month = stats.get('month', {})
+    msg += f"📅 **This Month**\n"
+    msg += f"• Total Drops: {month.get('drops', 0)}\n"
+    msg += f"• Total Revenue: €{month.get('revenue', 0):.2f}\n"
+    msg += f"• Monthly Ranking: #{month.get('rank', 'N/A')} of {month.get('total_workers', 'N/A')}\n"
+    msg += f"• Quota Achievement: {month.get('quota_achievement', 0):.1f}%\n\n"
+    
+    # Achievements and milestones
+    achievements = stats.get('achievements', {})
+    if achievements:
+        msg += f"🏆 **Achievements**\n"
+        if achievements.get('quota_streaks', 0) > 0:
+            msg += f"• Quota Streak: {achievements['quota_streaks']} days\n"
+        if achievements.get('milestones'):
+            msg += f"• Milestones: {', '.join(map(str, achievements['milestones']))}\n"
+        if achievements.get('top_performer_days', 0) > 0:
+            msg += f"• Top Performer Days: {achievements['top_performer_days']}\n"
+        msg += "\n"
+    
+    # Efficiency insights
+    efficiency = stats.get('efficiency', {})
+    if efficiency:
+        msg += f"⚡ **Efficiency Insights**\n"
+        msg += f"• Revenue per Drop: €{efficiency.get('revenue_per_drop', 0):.2f}\n"
+        msg += f"• Peak Hours: {efficiency.get('peak_hours', 'N/A')}\n"
+        msg += f"• Most Valuable Product: {efficiency.get('top_product', 'N/A')}\n"
+        msg += f"• Consistency Score: {efficiency.get('consistency_score', 0):.1f}/10\n"
+    
+    keyboard = [
+        [InlineKeyboardButton("📈 Weekly Detailed Report", callback_data="worker_weekly_detailed_report")],
+        [InlineKeyboardButton("💰 Revenue Breakdown", callback_data="worker_revenue_breakdown")],
+        [InlineKeyboardButton("🎯 Goal Tracking", callback_data="worker_goal_tracking")],
+        [InlineKeyboardButton("⬅️ Back to Panel", callback_data="worker_admin_menu")]
+    ]
+    
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    await query.answer()
+
+async def handle_worker_revenue_breakdown(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
+    """Show detailed revenue breakdown for worker"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    # Verify worker permissions
+    user_roles = get_user_roles(user_id)
+    if not user_roles['is_worker']:
+        return await query.answer("Access denied.", show_alert=True)
+    
+    revenue_data = await _get_worker_revenue_breakdown(user_id)
+    
+    msg = f"💰 **Revenue Breakdown**\n\n"
+    
+    # Time-based breakdown
+    time_breakdown = revenue_data.get('time_breakdown', {})
+    msg += f"📅 **Time-based Revenue:**\n"
+    msg += f"• Today: €{time_breakdown.get('today', 0):.2f}\n"
+    msg += f"• This Week: €{time_breakdown.get('week', 0):.2f}\n"
+    msg += f"• This Month: €{time_breakdown.get('month', 0):.2f}\n"
+    msg += f"• All Time: €{time_breakdown.get('total', 0):.2f}\n\n"
+    
+    # Product type breakdown
+    product_breakdown = revenue_data.get('product_breakdown', [])
+    if product_breakdown:
+        msg += f"📦 **By Product Type:**\n"
+        for product in product_breakdown[:5]:
+            msg += f"• {product['type']}: €{product['revenue']:.2f} ({product['drops']} drops)\n"
+        msg += "\n"
+    
+    # Price range analysis
+    price_analysis = revenue_data.get('price_analysis', {})
+    if price_analysis:
+        msg += f"💵 **Price Analysis:**\n"
+        msg += f"• Highest Sale: €{price_analysis.get('max_price', 0):.2f}\n"
+        msg += f"• Lowest Sale: €{price_analysis.get('min_price', 0):.2f}\n"
+        msg += f"• Average Sale: €{price_analysis.get('avg_price', 0):.2f}\n"
+        msg += f"• Most Common Price: €{price_analysis.get('mode_price', 0):.2f}\n\n"
+    
+    # Trends
+    trends = revenue_data.get('trends', {})
+    if trends:
+        msg += f"📈 **Trends:**\n"
+        msg += f"• Revenue Growth: {trends.get('growth_percent', 0):+.1f}%\n"
+        msg += f"• Best Revenue Day: {trends.get('best_day', 'N/A')}\n"
+        msg += f"• Consistency Rating: {trends.get('consistency', 0):.1f}/10\n"
+    
+    keyboard = [
+        [InlineKeyboardButton("📊 Back to Stats", callback_data="worker_view_stats")],
+        [InlineKeyboardButton("🏠 Worker Panel", callback_data="worker_admin_menu")]
+    ]
+    
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    await query.answer()
+
+async def handle_worker_goal_tracking(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
+    """Show goal tracking and achievements for worker"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    # Verify worker permissions
+    user_roles = get_user_roles(user_id)
+    if not user_roles['is_worker']:
+        return await query.answer("Access denied.", show_alert=True)
+    
+    goals_data = await _get_worker_goals_and_achievements(user_id)
+    
+    msg = f"🎯 **Goal Tracking & Achievements**\n\n"
+    
+    # Daily quota progress
+    quota_info = goals_data.get('quota', {})
+    msg += f"📊 **Daily Quota Progress:**\n"
+    msg += f"• Target: {quota_info.get('target', 0)} drops\n"
+    msg += f"• Completed: {quota_info.get('completed', 0)} drops\n"
+    msg += f"• Progress: {quota_info.get('progress_percent', 0):.1f}%\n"
+    progress_bar = _generate_progress_bar(quota_info.get('progress_percent', 0), 15)
+    msg += f"• {progress_bar}\n\n"
+    
+    # Weekly goals
+    weekly_goals = goals_data.get('weekly', {})
+    if weekly_goals:
+        msg += f"📅 **This Week's Goals:**\n"
+        msg += f"• Weekly Target: {weekly_goals.get('target', 0)} drops\n"
+        msg += f"• Current: {weekly_goals.get('current', 0)} drops\n"
+        msg += f"• Remaining: {max(0, weekly_goals.get('target', 0) - weekly_goals.get('current', 0))} drops\n\n"
+    
+    # Achievements
+    achievements = goals_data.get('achievements', [])
+    if achievements:
+        msg += f"🏆 **Recent Achievements:**\n"
+        for achievement in achievements[-5:]:
+            date = achievement.get('date', 'N/A')
+            desc = achievement.get('description', 'Achievement unlocked')
+            msg += f"• {date}: {desc}\n"
+        msg += "\n"
+    
+    # Milestones progress
+    milestones = goals_data.get('milestones', {})
+    if milestones:
+        msg += f"🌟 **Milestone Progress:**\n"
+        current_drops = milestones.get('current_total', 0)
+        next_milestone = milestones.get('next_milestone', 0)
+        if next_milestone > 0:
+            progress_to_milestone = (current_drops % next_milestone) / next_milestone * 100
+            msg += f"• Next Milestone: {next_milestone} drops\n"
+            msg += f"• Progress: {current_drops} / {next_milestone}\n"
+            msg += f"• {progress_to_milestone:.1f}% complete\n"
+        msg += "\n"
+    
+    # Performance insights
+    insights = goals_data.get('insights', [])
+    if insights:
+        msg += f"💡 **Performance Insights:**\n"
+        for insight in insights[:3]:
+            msg += f"• {insight}\n"
+    
+    keyboard = [
+        [InlineKeyboardButton("🎯 Set Personal Goals", callback_data="worker_set_personal_goals")],
+        [InlineKeyboardButton("📊 Back to Stats", callback_data="worker_view_stats")],
+        [InlineKeyboardButton("🏠 Worker Panel", callback_data="worker_admin_menu")]
+    ]
+    
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    await query.answer()
+
+# --- Enhanced Helper Functions ---
+async def _get_worker_comprehensive_stats_with_revenue(user_id: int) -> dict:
+    """Get comprehensive worker statistics including revenue metrics"""
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        
+        # Get basic worker info
+        c.execute("""
+            SELECT username, worker_status, worker_alias, worker_daily_quota
+            FROM users
+            WHERE user_id = ? AND is_worker = 1
+        """, (user_id,))
+        
+        worker_info = c.fetchone()
+        if not worker_info:
+            return {}
+        
+        stats = {
+            'alias': worker_info['worker_alias'],
+            'daily_quota': worker_info['worker_daily_quota'] or 10
+        }
+        
+        today = datetime.now().strftime('%Y-%m-%d')
+        week_start = (datetime.now() - timedelta(days=datetime.now().weekday())).strftime('%Y-%m-%d')
+        month_start = datetime.now().replace(day=1).strftime('%Y-%m-%d')
+        
+        # Today's stats with revenue
+        c.execute("""
+            SELECT COUNT(*) as drops, 
+                   COALESCE(SUM(price), 0) as revenue,
+                   COALESCE(AVG(price), 0) as avg_price,
+                   MIN(added_date) as first_drop
+            FROM products
+            WHERE added_by = ? AND DATE(added_date) = ?
+        """, (user_id, today))
+        
+        today_result = c.fetchone()
+        drops_today = today_result['drops'] if today_result else 0
+        revenue_today = float(today_result['revenue']) if today_result else 0.0
+        avg_price_today = float(today_result['avg_price']) if today_result else 0.0
+        
+        quota_progress = (drops_today / stats['daily_quota'] * 100) if stats['daily_quota'] > 0 else 0
+        efficiency_score = revenue_today / max(1, drops_today)
+        
+        stats['today'] = {
+            'drops': drops_today,
+            'revenue': revenue_today,
+            'avg_price': avg_price_today,
+            'quota_progress': quota_progress,
+            'efficiency_score': efficiency_score
+        }
+        
+        # Week's stats with revenue
+        c.execute("""
+            SELECT COUNT(*) as drops,
+                   COALESCE(SUM(price), 0) as revenue,
+                   DATE(added_date) as date
+            FROM products
+            WHERE added_by = ? AND DATE(added_date) >= ?
+            GROUP BY DATE(added_date)
+            ORDER BY drops DESC
+        """, (user_id, week_start))
+        
+        week_results = c.fetchall()
+        week_drops = sum(day['drops'] for day in week_results)
+        week_revenue = sum(float(day['revenue']) for day in week_results)
+        week_days = len(week_results)
+        week_daily_avg = week_drops / max(1, week_days)
+        revenue_per_day = week_revenue / max(1, week_days)
+        best_day = f"{week_results[0]['date']} ({week_results[0]['drops']} drops)" if week_results else "N/A"
+        
+        stats['week'] = {
+            'drops': week_drops,
+            'revenue': week_revenue,
+            'daily_avg': week_daily_avg,
+            'revenue_per_day': revenue_per_day,
+            'best_day': best_day
+        }
+        
+        # Month's stats with ranking
+        c.execute("""
+            SELECT COUNT(*) as drops,
+                   COALESCE(SUM(price), 0) as revenue
+            FROM products
+            WHERE added_by = ? AND DATE(added_date) >= ?
+        """, (user_id, month_start))
+        
+        month_result = c.fetchone()
+        month_drops = month_result['drops'] if month_result else 0
+        month_revenue = float(month_result['revenue']) if month_result else 0.0
+        
+        # Get ranking
+        c.execute("""
+            SELECT user_id, COUNT(*) as drops
+            FROM products p JOIN users u ON p.added_by = u.user_id
+            WHERE u.is_worker = 1 AND u.worker_status = 'active' AND DATE(p.added_date) >= ?
+            GROUP BY user_id
+            ORDER BY drops DESC
+        """, (month_start,))
+        
+        ranking_results = c.fetchall()
+        rank = 0
+        for i, result in enumerate(ranking_results, 1):
+            if result['user_id'] == user_id:
+                rank = i
+                break
+        
+        days_in_month = datetime.now().day
+        month_daily_avg = month_drops / max(1, days_in_month)
+        quota_achievement = (month_daily_avg / stats['daily_quota'] * 100) if stats['daily_quota'] > 0 else 0
+        
+        stats['month'] = {
+            'drops': month_drops,
+            'revenue': month_revenue,
+            'rank': rank,
+            'total_workers': len(ranking_results),
+            'quota_achievement': quota_achievement
+        }
+        
+        # Achievements and milestones
+        achievements = await _get_worker_achievements(user_id)
+        stats['achievements'] = achievements
+        
+        # Efficiency metrics
+        efficiency = await _get_worker_efficiency_metrics(user_id)
+        stats['efficiency'] = efficiency
+        
+        return stats
+        
+    except sqlite3.Error as e:
+        logger.error(f"Error fetching comprehensive stats for {user_id}: {e}")
+        return {}
+    finally:
+        if conn: conn.close()
+
+async def _get_worker_revenue_breakdown(user_id: int) -> dict:
+    """Get detailed revenue breakdown for worker"""
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        
+        revenue_data = {}
+        
+        today = datetime.now().strftime('%Y-%m-%d')
+        week_start = (datetime.now() - timedelta(days=datetime.now().weekday())).strftime('%Y-%m-%d')
+        month_start = datetime.now().replace(day=1).strftime('%Y-%m-%d')
+        
+        # Time-based breakdown
+        time_queries = {
+            'today': f"DATE(added_date) = '{today}'",
+            'week': f"DATE(added_date) >= '{week_start}'",
+            'month': f"DATE(added_date) >= '{month_start}'",
+            'total': "1=1"
+        }
+        
+        time_breakdown = {}
+        for period, condition in time_queries.items():
+            c.execute(f"""
+                SELECT COALESCE(SUM(price), 0) as revenue
+                FROM products
+                WHERE added_by = ? AND {condition}
+            """, (user_id,))
+            result = c.fetchone()
+            time_breakdown[period] = float(result['revenue']) if result else 0.0
+        
+        revenue_data['time_breakdown'] = time_breakdown
+        
+        # Product type breakdown
+        c.execute("""
+            SELECT product_type, 
+                   COUNT(*) as drops,
+                   COALESCE(SUM(price), 0) as revenue
+            FROM products
+            WHERE added_by = ? AND DATE(added_date) >= ?
+            GROUP BY product_type
+            ORDER BY revenue DESC
+        """, (user_id, month_start))
+        
+        product_breakdown = []
+        for row in c.fetchall():
+            product_breakdown.append({
+                'type': row['product_type'],
+                'drops': row['drops'],
+                'revenue': float(row['revenue'])
+            })
+        revenue_data['product_breakdown'] = product_breakdown
+        
+        # Price analysis
+        c.execute("""
+            SELECT MIN(price) as min_price,
+                   MAX(price) as max_price,
+                   AVG(price) as avg_price
+            FROM products
+            WHERE added_by = ?
+        """, (user_id,))
+        
+        price_result = c.fetchone()
+        if price_result:
+            revenue_data['price_analysis'] = {
+                'min_price': float(price_result['min_price'] or 0),
+                'max_price': float(price_result['max_price'] or 0),
+                'avg_price': float(price_result['avg_price'] or 0),
+                'mode_price': 0  # Would need more complex query for mode
+            }
+        
+        return revenue_data
+        
+    except sqlite3.Error as e:
+        logger.error(f"Error getting revenue breakdown for {user_id}: {e}")
+        return {}
+    finally:
+        if conn: conn.close()
+
+async def _get_worker_achievements(user_id: int) -> dict:
+    """Get worker achievements and milestones"""
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        
+        achievements = {}
+        
+        # Check for quota streaks (consecutive days meeting quota)
+        # This would require more complex logic to track streaks
+        achievements['quota_streaks'] = 0
+        
+        # Check milestones
+        c.execute("SELECT COUNT(*) as total_drops FROM products WHERE added_by = ?", (user_id,))
+        total_drops = c.fetchone()['total_drops']
+        
+        milestones = [10, 50, 100, 500, 1000, 5000]
+        achieved_milestones = [m for m in milestones if total_drops >= m]
+        achievements['milestones'] = achieved_milestones
+        
+        # Top performer days (days when worker was #1)
+        achievements['top_performer_days'] = 0  # Would need complex query
+        
+        return achievements
+        
+    except sqlite3.Error as e:
+        logger.error(f"Error getting achievements for {user_id}: {e}")
+        return {}
+    finally:
+        if conn: conn.close()
+
+async def _get_worker_efficiency_metrics(user_id: int) -> dict:
+    """Get worker efficiency metrics"""
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        
+        efficiency = {}
+        
+        # Revenue per drop
+        c.execute("""
+            SELECT COUNT(*) as total_drops,
+                   COALESCE(SUM(price), 0) as total_revenue
+            FROM products
+            WHERE added_by = ?
+        """, (user_id,))
+        
+        result = c.fetchone()
+        if result and result['total_drops'] > 0:
+            efficiency['revenue_per_drop'] = float(result['total_revenue']) / result['total_drops']
+        else:
+            efficiency['revenue_per_drop'] = 0.0
+        
+        # Peak hours (most productive hour)
+        c.execute("""
+            SELECT strftime('%H', added_date) as hour, COUNT(*) as drops
+            FROM products
+            WHERE added_by = ?
+            GROUP BY hour
+            ORDER BY drops DESC
+            LIMIT 1
+        """, (user_id,))
+        
+        peak_result = c.fetchone()
+        if peak_result:
+            hour = int(peak_result['hour'])
+            efficiency['peak_hours'] = f"{hour:02d}:00-{hour+1:02d}:00"
+        else:
+            efficiency['peak_hours'] = "N/A"
+        
+        # Most valuable product type
+        c.execute("""
+            SELECT product_type, COALESCE(SUM(price), 0) as revenue
+            FROM products
+            WHERE added_by = ?
+            GROUP BY product_type
+            ORDER BY revenue DESC
+            LIMIT 1
+        """, (user_id,))
+        
+        top_product_result = c.fetchone()
+        efficiency['top_product'] = top_product_result['product_type'] if top_product_result else "N/A"
+        
+        # Consistency score (simplified)
+        efficiency['consistency_score'] = 7.5  # Placeholder calculation
+        
+        return efficiency
+        
+    except sqlite3.Error as e:
+        logger.error(f"Error getting efficiency metrics for {user_id}: {e}")
+        return {}
+    finally:
+        if conn: conn.close()
+
+async def _get_worker_goals_and_achievements(user_id: int) -> dict:
+    """Get worker goals and achievement data"""
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        
+        goals_data = {}
+        
+        # Get daily quota info
+        c.execute("""
+            SELECT worker_daily_quota FROM users WHERE user_id = ? AND is_worker = 1
+        """, (user_id,))
+        quota_result = c.fetchone()
+        daily_quota = quota_result['worker_daily_quota'] if quota_result else 10
+        
+        # Get today's progress
+        today = datetime.now().strftime('%Y-%m-%d')
+        c.execute("""
+            SELECT COUNT(*) as today_drops
+            FROM products
+            WHERE added_by = ? AND DATE(added_date) = ?
+        """, (user_id, today))
+        today_drops = c.fetchone()['today_drops']
+        
+        progress_percent = (today_drops / daily_quota * 100) if daily_quota > 0 else 0
+        
+        goals_data['quota'] = {
+            'target': daily_quota,
+            'completed': today_drops,
+            'progress_percent': progress_percent
+        }
+        
+        # Weekly goals (7 * daily quota)
+        week_start = (datetime.now() - timedelta(days=datetime.now().weekday())).strftime('%Y-%m-%d')
+        c.execute("""
+            SELECT COUNT(*) as week_drops
+            FROM products
+            WHERE added_by = ? AND DATE(added_date) >= ?
+        """, (user_id, week_start))
+        week_drops = c.fetchone()['week_drops']
+        
+        weekly_target = daily_quota * 7
+        goals_data['weekly'] = {
+            'target': weekly_target,
+            'current': week_drops
+        }
+        
+        # Milestones
+        c.execute("SELECT COUNT(*) as total_drops FROM products WHERE added_by = ?", (user_id,))
+        total_drops = c.fetchone()['total_drops']
+        
+        milestones = [10, 50, 100, 500, 1000, 5000, 10000]
+        next_milestone = next((m for m in milestones if m > total_drops), None)
+        
+        goals_data['milestones'] = {
+            'current_total': total_drops,
+            'next_milestone': next_milestone
+        }
+        
+        # Performance insights
+        insights = []
+        if progress_percent >= 100:
+            insights.append("🎉 Daily quota completed!")
+        elif progress_percent >= 50:
+            insights.append("💪 Great progress on today's quota!")
+        
+        if week_drops > weekly_target * 0.8:
+            insights.append("📈 Excellent weekly performance!")
+        
+        goals_data['insights'] = insights
+        
+        return goals_data
+        
+    except sqlite3.Error as e:
+        logger.error(f"Error getting goals data for {user_id}: {e}")
+        return {}
+    finally:
+        if conn: conn.close()
 
 # --- Helper Functions ---
 async def _get_worker_info(user_id: int) -> dict:

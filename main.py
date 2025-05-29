@@ -288,7 +288,16 @@ def callback_query_router(func):
                 "adm_worker_settings": admin_workers.handle_adm_worker_settings,
                 "adm_view_specific_worker_enhanced": admin_workers.handle_adm_view_specific_worker_enhanced,
                 
-                # Worker Interface Callbacks (from worker_interface.py)
+                # NEW: Advanced Worker Management Features
+                "adm_worker_edit_alias": admin_workers.handle_adm_worker_edit_alias,
+                "adm_worker_edit_quota": admin_workers.handle_adm_worker_edit_quota,
+                "adm_worker_export_data": admin_workers.handle_adm_worker_export_data,
+                "adm_export_performance_summary": admin_workers.handle_adm_export_performance_summary,
+                "adm_export_revenue_analysis": admin_workers.handle_adm_export_revenue_analysis,
+                "adm_worker_time_analytics": admin_workers.handle_adm_worker_time_analytics,
+                "adm_export_time_analysis": admin_workers.handle_adm_export_time_analysis,
+                
+                # Enhanced Worker Interface Callbacks (from worker_interface.py)
                 "worker_admin_menu": worker_interface.handle_worker_admin_menu,
                 "worker_add_products": worker_interface.handle_worker_add_products,
                 "worker_city": worker_interface.handle_worker_city_selection,
@@ -296,6 +305,12 @@ def callback_query_router(func):
                 "worker_type": worker_interface.handle_worker_type_selection,
                 "worker_view_stats": worker_interface.handle_worker_view_stats,
                 "worker_leaderboard": worker_interface.handle_worker_leaderboard,
+                
+                # NEW: Enhanced Worker Statistics
+                "worker_view_stats_enhanced": worker_interface.handle_worker_view_stats_enhanced,
+                "worker_revenue_breakdown": worker_interface.handle_worker_revenue_breakdown,
+                "worker_goal_tracking": worker_interface.handle_worker_goal_tracking,
+                "worker_weekly_detailed_report": worker_interface.handle_worker_view_stats,  # Fallback
                 # === Worker Management Callbacks END ===
 
                 # NEW: Bulk Stock Management Handlers (from admin_bulk_stock.py)
@@ -498,6 +513,17 @@ async def bulk_stock_monitoring_job_wrapper(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error in background job bulk_stock_monitoring_job: {e}", exc_info=True)
 
+# NEW: Background job for worker achievements and notifications
+async def worker_achievements_notification_job_wrapper(context: ContextTypes.DEFAULT_TYPE):
+    """Background job to check worker achievements and send notifications"""
+    logger.debug("Running background job: worker_achievements_notification_job")
+    try:
+        # Import the function from admin_workers
+        from admin_workers import check_worker_achievements_and_notify
+        await check_worker_achievements_and_notify(context)
+        logger.info("Worker achievements notification job completed successfully")
+    except Exception as e:
+        logger.error(f"Error in background job worker_achievements_notification_job: {e}", exc_info=True)
 
 # --- Flask Webhook Routes ---
 def verify_nowpayments_signature(request_data_bytes, signature_header, secret_key):
@@ -1055,6 +1081,10 @@ def main() -> None:
         # NEW: Schedule bulk stock monitoring job (runs every 30 minutes)
         job_queue.run_repeating(bulk_stock_monitoring_job_wrapper, interval=1800, first=60, name="bulk_stock_monitoring")
         logger.info("Scheduled bulk stock monitoring job to run every 30 minutes")
+        
+        # NEW: Schedule worker achievements notification job (runs every hour)
+        job_queue.run_repeating(worker_achievements_notification_job_wrapper, interval=3600, first=120, name="worker_achievements")
+        logger.info("Scheduled worker achievements notification job to run every hour")
         
         await telegram_app.initialize()
         await telegram_app.start()

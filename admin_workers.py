@@ -4,6 +4,7 @@ import sqlite3
 import logging
 import math
 from datetime import datetime, timezone, timedelta
+import os
 
 # --- Telegram Imports ---
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -943,5 +944,273 @@ async def handle_adm_worker_alias_edit_message(update: Update, context: ContextT
     display_alias = new_alias if new_alias else "None"
     await send_message_with_retry(context.bot, chat_id, f"✅ Worker alias updated to: {display_alias}",
                                   reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Worker Profile", callback_data=f"adm_view_specific_worker|{worker_id}|{offset}")]]))
+
+# --- Enhanced Worker Profile Management ---
+async def handle_adm_worker_edit_alias(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
+    """Handle alias editing for workers"""
+    query = update.callback_query
+    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not params or len(params) < 2: return await query.answer("Error: Invalid data.", show_alert=True)
+
+    worker_id = int(params[0])
+    offset = int(params[1])
+    
+    # Get current alias
+    conn = None
+    current_alias = ""
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT worker_alias, username FROM users WHERE user_id = ? AND is_worker = 1", (worker_id,))
+        result = c.fetchone()
+        if result:
+            current_alias = result['worker_alias'] or ""
+            username = result['username'] or f"ID_{worker_id}"
+        else:
+            return await query.answer("Worker not found.", show_alert=True)
+    except sqlite3.Error as e:
+        logger.error(f"Error fetching worker alias: {e}")
+        return await query.answer("Database error.", show_alert=True)
+    finally:
+        if conn: conn.close()
+    
+    context.user_data['state'] = 'awaiting_worker_alias_edit'
+    context.user_data['editing_worker_id'] = worker_id
+    context.user_data['editing_worker_offset'] = offset
+    
+    msg = f"✏️ **Edit Worker Alias**\n\n"
+    msg += f"Worker: @{username} (ID: {worker_id})\n"
+    msg += f"Current Alias: {current_alias or 'None'}\n\n"
+    msg += "Please reply with the new alias (max 20 characters) or send '-' to remove alias:"
+    
+    keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data=f"adm_view_specific_worker|{worker_id}|{offset}")]]
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    await query.answer("Enter new alias in chat.")
+
+async def handle_adm_worker_edit_quota(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
+    """Handle quota editing for workers"""
+    query = update.callback_query
+    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    if not params or len(params) < 2: return await query.answer("Error: Invalid data.", show_alert=True)
+
+    worker_id = int(params[0])
+    offset = int(params[1])
+    
+    # Get current quota
+    conn = None
+    current_quota = 10
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT worker_daily_quota, username FROM users WHERE user_id = ? AND is_worker = 1", (worker_id,))
+        result = c.fetchone()
+        if result:
+            current_quota = result['worker_daily_quota'] or 10
+            username = result['username'] or f"ID_{worker_id}"
+        else:
+            return await query.answer("Worker not found.", show_alert=True)
+    except sqlite3.Error as e:
+        logger.error(f"Error fetching worker quota: {e}")
+        return await query.answer("Database error.", show_alert=True)
+    finally:
+        if conn: conn.close()
+    
+    context.user_data['state'] = 'awaiting_worker_quota_edit'
+    context.user_data['editing_worker_id'] = worker_id
+    context.user_data['editing_worker_offset'] = offset
+    
+    msg = f"📊 **Edit Daily Quota**\n\n"
+    msg += f"Worker: @{username} (ID: {worker_id})\n"
+    msg += f"Current Daily Quota: {current_quota} drops\n\n"
+    msg += "Please reply with the new daily quota (0-100):"
+    
+    keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data=f"adm_view_specific_worker|{worker_id}|{offset}")]]
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    await query.answer("Enter new quota in chat.")
+
+# --- Export Functionality ---
+async def handle_adm_export_performance_summary(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
+    """Export comprehensive performance summary to CSV"""
+    query = update.callback_query
+    if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
+    
+    await query.answer("🔄 Generating performance export...")
+    
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        
+        # Get comprehensive worker data
+        c.execute("""
+            SELECT 
+                u.user_id,
+                u.username,
+                COALESCE(u.worker_alias, '') as alias,
+                u.worker_status,
+                COALESCE(u.daily_quota, 10) as daily_quota,
+                COALESCE(u.worker_performance_score, 0) as performance_score,
+                u.created_at as joined_date,
+                COUNT(p.id) as total_drops,
+                COALESCE(SUM(p.price), 0) as total_revenue,
+                COUNT(CASE WHEN DATE(p.created_at, 'localtime') = DATE('now', 'localtime') THEN 1 END) as today_drops,
+                COUNT(CASE WHEN p.created_at >= datetime('now', '-7 days') THEN 1 END) as week_drops,
+                COUNT(CASE WHEN p.created_at >= datetime('now', '-30 days') THEN 1 END) as month_drops
+            FROM users u
+            LEFT JOIN products p ON u.user_id = p.added_by
+            WHERE u.is_worker = 1
+            GROUP BY u.user_id
+            ORDER BY total_drops DESC
+        """)
+        
+        workers = c.fetchall()
+        
+        # Generate CSV content
+        csv_content = "Worker ID,Username,Alias,Status,Daily Quota,Performance Score,Joined Date,Total Drops,Total Revenue,Today Drops,Week Drops,Month Drops,Efficiency (EUR/Drop),Daily Progress %\n"
+        
+        for worker in workers:
+            efficiency = float(worker['total_revenue']) / worker['total_drops'] if worker['total_drops'] > 0 else 0
+            daily_progress = (worker['today_drops'] / worker['daily_quota']) * 100
+            
+            display_name = worker['alias'] or worker['username'] or f"Worker_{worker['user_id']}"
+            
+            csv_content += f"{worker['user_id']},{worker['username']},{worker['alias']},{worker['worker_status']},{worker['daily_quota']},{worker['performance_score']},{worker['joined_date']},{worker['total_drops']},{worker['total_revenue']:.2f},{worker['today_drops']},{worker['week_drops']},{worker['month_drops']},{efficiency:.2f},{daily_progress:.1f}\n"
+        
+        # Create temporary file
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"worker_performance_summary_{timestamp}.csv"
+        filepath = os.path.join(os.getcwd(), filename)
+        
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(csv_content)
+        
+        # Send file to admin
+        with open(filepath, 'rb') as f:
+            await context.bot.send_document(
+                chat_id=ADMIN_ID,
+                document=f,
+                filename=filename,
+                caption=f"📊 Worker Performance Summary Export\n📅 Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n👥 Workers: {len(workers)}"
+            )
+        
+        # Clean up file
+        os.remove(filepath)
+        
+        msg = "✅ Performance summary exported successfully! Check your documents."
+        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔙 Back to Analytics", callback_data="adm_worker_analytics")
+        ]]))
+        
+    except Exception as e:
+        logger.error(f"Error checking daily quota for worker {user_id}: {e}")
+
+async def _check_performance_milestones(context, user_id, username, alias, performance_score):
+    """Check and notify performance score milestones"""
+    try:
+        display_name = alias or username or f"Worker_{user_id}"
+        milestones = [100, 250, 500, 1000, 2500, 5000]
+        
+        conn = get_db_connection()
+        c = conn.cursor()
+        
+        for milestone in milestones:
+            if performance_score >= milestone:
+                # Check if already notified for this milestone
+                c.execute("""
+                    SELECT id FROM worker_notifications 
+                    WHERE worker_id = ? AND notification_type = ?
+                """, (user_id, f"performance_{milestone}"))
+                
+                if not c.fetchone():
+                    # Send notification
+                    message = f"🏆 **{display_name}** reached {milestone} performance points!\n"
+                    message += f"Current score: {performance_score}\n"
+                    message += "Keep up the excellent work! 🎉"
+                    
+                    # Send to admin
+                    await send_message_with_retry(context.bot, ADMIN_ID, message, parse_mode=None)
+                    
+                    # Send to worker
+                    await send_message_with_retry(context.bot, user_id, 
+                        f"🏆 Milestone achieved! You've reached {milestone} performance points!\n"
+                        f"Current score: {performance_score}\n"
+                        f"🎉 Keep up the excellent work!", parse_mode=None)
+                    
+                    # Log notification
+                    c.execute("""
+                        INSERT INTO worker_notifications 
+                        (worker_id, notification_type, message, created_at)
+                        VALUES (?, ?, ?, ?)
+                    """, (user_id, f"performance_{milestone}", message, datetime.now(timezone.utc)))
+                    
+                    conn.commit()
+                    logger.info(f"Performance milestone notification sent to worker {user_id} for {milestone} points")
+                    
+        conn.close()
+        
+    except Exception as e:
+        logger.error(f"Error checking performance milestones for worker {user_id}: {e}")
+
+async def _check_weekly_achievements(context, user_id, username, alias):
+    """Check and notify weekly achievements"""
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        
+        # Get this week's drops
+        today = datetime.now(timezone.utc)
+        week_start = today - timedelta(days=today.weekday())
+        
+        c.execute("""
+            SELECT COUNT(*) as count FROM products 
+            WHERE added_by = ? AND created_at >= ?
+        """, (user_id, week_start))
+        
+        weekly_drops = c.fetchone()['count']
+        display_name = alias or username or f"Worker_{user_id}"
+        
+        # Weekly milestones
+        weekly_milestones = [50, 100, 200, 500]
+        
+        for milestone in weekly_milestones:
+            if weekly_drops >= milestone:
+                # Check if already notified this week for this milestone
+                c.execute("""
+                    SELECT id FROM worker_notifications 
+                    WHERE worker_id = ? AND notification_type = ? 
+                    AND created_at >= ?
+                """, (user_id, f"weekly_{milestone}", week_start))
+                
+                if not c.fetchone():
+                    # Send notification
+                    message = f"📅 **{display_name}** weekly achievement!\n"
+                    message += f"🎯 {milestone} drops this week!\n"
+                    message += f"Total this week: {weekly_drops}\n"
+                    message += "🔥 Outstanding weekly performance!"
+                    
+                    # Send to admin
+                    await send_message_with_retry(context.bot, ADMIN_ID, message, parse_mode=None)
+                    
+                    # Send to worker
+                    await send_message_with_retry(context.bot, user_id, 
+                        f"📅 Weekly achievement unlocked!\n"
+                        f"🎯 {milestone} drops this week!\n"
+                        f"Total: {weekly_drops}\n"
+                        f"🔥 Outstanding performance!", parse_mode=None)
+                    
+                    # Log notification
+                    c.execute("""
+                        INSERT INTO worker_notifications 
+                        (worker_id, notification_type, message, created_at)
+                        VALUES (?, ?, ?, ?)
+                    """, (user_id, f"weekly_{milestone}", message, datetime.now(timezone.utc)))
+                    
+                    conn.commit()
+                    logger.info(f"Weekly achievement notification sent to worker {user_id} for {milestone} drops")
+                    
+        conn.close()
+        
+    except Exception as e:
+        logger.error(f"Error checking weekly achievements for worker {user_id}: {e}")
 
 # --- END OF FILE admin_workers.py ---

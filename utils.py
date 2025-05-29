@@ -1181,6 +1181,16 @@ def init_db():
                 FOREIGN KEY (product_type) REFERENCES product_types(name) ON DELETE CASCADE
             )''')
 
+            # NEW: Worker notifications table for automated notifications
+            c.execute('''CREATE TABLE IF NOT EXISTS worker_notifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                worker_id INTEGER NOT NULL,
+                notification_type TEXT NOT NULL,
+                message TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (worker_id) REFERENCES users (user_id)
+            )''')
+
             # Insert initial welcome messages (only if table was just created or empty - handled by INSERT OR IGNORE)
             initial_templates = [
                 ("default", LANGUAGES['en']['welcome'], "Built-in default message (EN)"),
@@ -1224,6 +1234,10 @@ def init_db():
             c.execute("CREATE INDEX IF NOT EXISTS idx_reseller_discounts_user_id ON reseller_discounts(reseller_user_id)")
             # <<< ADDED Index for is_worker >>>
             c.execute("CREATE INDEX IF NOT EXISTS idx_users_is_worker ON users(is_worker)")
+            # NEW: Indexes for worker notifications
+            c.execute("CREATE INDEX IF NOT EXISTS idx_worker_notifications_worker_id ON worker_notifications(worker_id)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_worker_notifications_type ON worker_notifications(notification_type)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_worker_notifications_created_at ON worker_notifications(created_at)")
             # <<< END ADDED >>>
 
 
