@@ -2145,12 +2145,23 @@ async def _add_single_bulk_item_to_db(context: ContextTypes.DEFAULT_TYPE, common
     product_id = None
     
     try:
-        media_list_for_db = []
-        if message_media_info: 
+        conn = get_db_connection()
+        c = conn.cursor()
+        
+        # Insert product into database
+        insert_params = (city, district, p_type, size, product_name, price, original_text, admin_id, datetime.now(timezone.utc).isoformat())
+        c.execute("""INSERT INTO products
+                        (city, district, product_type, size, name, price, available, reserved, original_text, added_by, added_date)
+                     VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?)""", insert_params)
+        product_id = c.lastrowid
+
+        # Handle media if present
+        if message_media_info and product_id: 
             temp_dir_base = await asyncio.to_thread(tempfile.mkdtemp, prefix="bulk_item_")
             temp_dir = os.path.join(temp_dir_base, str(int(time.time()*1000))) 
             await asyncio.to_thread(os.makedirs, temp_dir, exist_ok=True)
 
+            media_inserts = []
             for i, media_info_item in enumerate(message_media_info):
                 m_type = media_info_item['type']
                 file_id_tg = media_info_item['file_id'] 
@@ -2160,38 +2171,19 @@ async def _add_single_bulk_item_to_db(context: ContextTypes.DEFAULT_TYPE, common
                 try:
                     file_obj = await context.bot.get_file(file_id_tg)
                     await file_obj.download_to_drive(custom_path=temp_file_path)
-                    if not await asyncio.to_thread(os.path.exists, temp_file_path) or await asyncio.to_thread(os.path.getsize, temp_file_path) == 0:
-                        raise IOError(f"Bulk downloaded file {temp_file_path} is missing or empty.")
-                    media_list_for_db.append({"type": m_type, "path": temp_file_path, "file_id": file_id_tg})
+                    if await asyncio.to_thread(os.path.exists, temp_file_path) and await asyncio.to_thread(os.path.getsize, temp_file_path) > 0:
+                        # Move to final location
+                        final_media_dir = os.path.join(MEDIA_DIR, str(product_id))
+                        await asyncio.to_thread(os.makedirs, final_media_dir, exist_ok=True)
+                        
+                        final_path = os.path.join(final_media_dir, temp_file_name)
+                        await asyncio.to_thread(shutil.move, temp_file_path, final_path)
+                        media_inserts.append((product_id, m_type, final_path, file_id_tg))
                 except Exception as e:
-                    logger.error(f"Error downloading media for bulk item ({file_id_tg}): {e}")
+                    logger.error(f"Error processing admin bulk media ({file_id_tg}): {e}")
                     pass 
 
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute("BEGIN")
-        insert_params = (city, district, p_type, size, product_name, price, original_text, admin_id, datetime.now(timezone.utc).isoformat())
-        c.execute("""INSERT INTO products
-                        (city, district, product_type, size, name, price, available, reserved, original_text, added_by, added_date)
-                     VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?)""", insert_params)
-        product_id = c.lastrowid
-
-        if product_id and media_list_for_db and temp_dir: 
-            final_media_dir = os.path.join(MEDIA_DIR, str(product_id))
-            await asyncio.to_thread(os.makedirs, final_media_dir, exist_ok=True)
-            media_inserts = []
-            for media_item_db in media_list_for_db:
-                temp_p = media_item_db["path"]
-                if await asyncio.to_thread(os.path.exists, temp_p):
-                    new_fname = os.path.basename(temp_p) 
-                    final_p_path = os.path.join(final_media_dir, new_fname)
-                    try:
-                        await asyncio.to_thread(shutil.move, temp_p, final_p_path)
-                        media_inserts.append((product_id, media_item_db["type"], final_p_path, media_item_db["file_id"]))
-                    except OSError as move_err:
-                        logger.error(f"Error moving bulk media {temp_p}: {move_err}")
-                else:
-                    logger.warning(f"Temp bulk media not found during move: {temp_p}")
+            # Insert media records
             if media_inserts:
                 c.executemany("INSERT INTO product_media (product_id, media_type, file_path, telegram_file_id) VALUES (?, ?, ?, ?)", media_inserts)
         
@@ -2199,11 +2191,13 @@ async def _add_single_bulk_item_to_db(context: ContextTypes.DEFAULT_TYPE, common
         logger.info(f"Bulk Added: Product {product_id} ({product_name}) by admin {admin_id}.")
         return True
     except Exception as e:
-        if conn and conn.in_transaction: conn.rollback()
+        if conn and conn.in_transaction: 
+            conn.rollback()
         logger.error(f"Error adding single bulk item to DB for product '{product_name}': {e}", exc_info=True)
         return False
     finally:
-        if conn: conn.close()
+        if conn: 
+            conn.close()
         if temp_dir and await asyncio.to_thread(os.path.exists, temp_dir):
             await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)
 
