@@ -1465,7 +1465,8 @@ def get_user_roles(user_id: int) -> dict:
         logger.info(f"DEBUG: get_user_roles for user {user_id}: database result = {user_db_info}")
         if user_db_info and user_db_info['is_worker'] == 1:
             is_worker_flag = True
-            logger.info(f"DEBUG: User {user_id} detected as worker with status: {user_db_info.get('worker_status', 'None')}")
+            worker_status = user_db_info['worker_status'] if 'worker_status' in user_db_info.keys() else 'None'
+            logger.info(f"DEBUG: User {user_id} detected as worker with status: {worker_status}")
         else:
             logger.info(f"DEBUG: User {user_id} NOT detected as worker")
     except sqlite3.Error as e:
