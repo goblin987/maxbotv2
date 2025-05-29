@@ -388,7 +388,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         elif text.startswith('/done_bulk'):
             if user_id in [ADMIN_ID] + SECONDARY_ADMIN_IDS:
-                await admin_product_management.done_bulk_adding(update, context)
+                await admin_product_management.handle_done_bulk_command(update, context)
             else:
                 await update.message.reply_text("Access denied.")
             return
@@ -403,6 +403,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Admin Workers Message Handling
         await admin_workers.handle_admin_worker_message(update, context)
+        
+        # Admin Bulk Add Message Handling (for forwarded messages and size/price input)
+        if user_id in [ADMIN_ID] + SECONDARY_ADMIN_IDS:
+            await admin_product_management.handle_adm_bulk_size_message(update, context)
+            await admin_product_management.handle_adm_bulk_price_message(update, context)
+            await admin_product_management.handle_adm_bulk_forwarded_drops(update, context)
         
         # Worker Message Handling (simplified product adding)
         await handle_worker_single_product_message(update, context)
