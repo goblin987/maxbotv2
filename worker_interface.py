@@ -377,30 +377,35 @@ async def handle_worker_bulk_district(update: Update, context: ContextTypes.DEFA
     
     context.user_data["worker_bulk_district_id"] = dist_id
     context.user_data["worker_bulk_district"] = district_name
-    context.user_data["state"] = "awaiting_worker_bulk_details"
-    context.user_data["worker_bulk_products"] = []  # Initialize bulk products list
+    context.user_data["state"] = "awaiting_worker_bulk_forwarded_drops"  # Changed state
+    context.user_data["worker_bulk_items_added_count"] = 0  # Track successful adds
+    context.user_data["worker_bulk_items_failed"] = []  # Track failed adds
     
     type_emoji = PRODUCT_TYPES.get(product_type, DEFAULT_PRODUCT_EMOJI)
-    msg = f"📦 Add Bulk {type_emoji} {product_type} (Max 10)\n"
-    msg += f"📍 {city_name} / {district_name}\n\n"
-    msg += f"Send one message per product:\n\n"
-    msg += f"📝 Include size and price (any format)\n"
-    msg += f"Examples:\n"
-    msg += f"• '2g 30.00'\n"
-    msg += f"• 'small batch 25'\n"
-    msg += f"• 'premium quality 1g 35'\n\n"
-    msg += f"💡 Send up to 10 products, then finish."
+    msg = f"📦 **Bulk Add {type_emoji} {product_type}** (Max 10)\n"
+    msg += f"📍 **{city_name} / {district_name}**\n\n"
+    msg += f"🔄 **Now forward your product messages:**\n\n"
+    msg += f"📝 Each message should have:\n"
+    msg += f"• **Media** (photo/video/GIF)\n"
+    msg += f"• **Caption** with product details\n\n"
+    msg += f"💡 Forward up to 10 messages, then click finish.\n"
+    msg += f"📊 **Progress:** 0/10 added"
     
     keyboard = [
         [InlineKeyboardButton("✅ Finish Bulk Add (0/10)", callback_data="worker_bulk_finish")],
         [InlineKeyboardButton("❌ Cancel", callback_data="worker_admin_menu")]
     ]
     
-    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
-    await query.answer("Send product details in chat.")
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    await query.answer("Forward product messages with media + captions")
+    
+    # Store message info for progress updates
+    if query.message:
+        context.user_data["worker_bulk_setup_message_id"] = query.message.message_id
+        context.user_data["worker_bulk_setup_chat_id"] = query.message.chat_id
 
 async def handle_worker_bulk_finish(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
-    """Finish bulk product addition"""
+    """Handle finishing the bulk product addition"""
     query = update.callback_query
     user_id = query.from_user.id
     
@@ -409,86 +414,12 @@ async def handle_worker_bulk_finish(update: Update, context: ContextTypes.DEFAUL
     if not user_roles['is_worker']:
         return await query.answer("Access denied. Worker permissions required.", show_alert=True)
 
-    bulk_products = context.user_data.get("worker_bulk_products", [])
+    state = context.user_data.get("state")
+    if state != "awaiting_worker_bulk_forwarded_drops":
+        return await query.answer("No active bulk session found.", show_alert=True)
     
-    if not bulk_products:
-        return await query.answer("No products added yet. Add some products first.", show_alert=True)
-    
-    product_type = context.user_data.get("worker_selected_category")
-    city_name = context.user_data.get("worker_bulk_city")
-    district_name = context.user_data.get("worker_bulk_district")
-    
-    try:
-        conn = get_db_connection()
-        c = conn.cursor()
-        
-        # Find or create city
-        c.execute("SELECT city_id FROM cities WHERE city_name = ?", (city_name,))
-        city_result = c.fetchone()
-        if not city_result:
-            c.execute("INSERT INTO cities (city_name) VALUES (?)", (city_name,))
-            city_id = c.lastrowid
-        else:
-            city_id = city_result[0]
-        
-        # Find or create district
-        c.execute("SELECT district_id FROM districts WHERE city_id = ? AND district_name = ?", (city_id, district_name))
-        district_result = c.fetchone()
-        if not district_result:
-            c.execute("INSERT INTO districts (city_id, district_name) VALUES (?, ?)", (city_id, district_name))
-            district_id = c.lastrowid
-        else:
-            district_id = district_result[0]
-        
-        # Insert all bulk products
-        product_ids = []
-        type_emoji = PRODUCT_TYPES.get(product_type, DEFAULT_PRODUCT_EMOJI)
-        
-        for product in bulk_products:
-            c.execute("""
-                INSERT INTO products (city_id, district_id, product_type, size, price, available, added_by)
-                VALUES (?, ?, ?, ?, ?, 1, ?)
-            """, (city_id, district_id, product["type"], product["size"], product["price"], user_id))
-            product_ids.append(c.lastrowid)
-        
-        # Log worker action
-        c.execute("""
-            INSERT INTO worker_actions (worker_id, action_type, details, quantity, timestamp)
-            VALUES (?, 'add_bulk', ?, ?, CURRENT_TIMESTAMP)
-        """, (user_id, f"Added {len(bulk_products)}x {product_type} products in {city_name}/{district_name}", len(bulk_products)))
-        
-        conn.commit()
-        conn.close()
-        
-        # Success message
-        msg = f"✅ **Bulk Addition Complete!**\n\n"
-        msg += f"• **Products Added:** {len(bulk_products)} {type_emoji} {product_type}\n"
-        msg += f"• **Location:** {city_name} / {district_name}\n"
-        msg += f"• **Product IDs:** #{min(product_ids)}-#{max(product_ids)}\n\n"
-        msg += f"**Product Details:**\n"
-        
-        for i, product in enumerate(bulk_products[:5], 1):  # Show first 5 products
-            msg += f"{i}. {product['size']} - {product['price']:.2f} EUR\n"
-        
-        if len(bulk_products) > 5:
-            msg += f"... and {len(bulk_products) - 5} more\n"
-        
-        msg += f"\n🎉 **Great work!** All products are now available for customers."
-        
-        keyboard = [
-            [InlineKeyboardButton("📦 Add More Products", callback_data="worker_select_category")],
-            [InlineKeyboardButton("🏠 Worker Panel", callback_data="worker_admin_menu")]
-        ]
-        
-        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-        
-        # Clear worker state
-        for key in ["worker_bulk_products", "worker_selected_category", "worker_bulk_city", "worker_bulk_district", "worker_bulk_city_id", "worker_bulk_district_id", "state"]:
-            context.user_data.pop(key, None)
-        
-    except Exception as e:
-        logger.error(f"Error in worker bulk finish: {e}")
-        await query.answer("Error processing bulk products.", show_alert=True)
+    await query.answer("Finishing bulk add session...")
+    await _finish_worker_bulk_session(update, context, "Worker manually finished bulk add session.")
 
 async def handle_worker_confirm_single_product(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Confirm and add single product to database"""
@@ -678,5 +609,313 @@ async def _get_worker_info(user_id: int) -> dict:
     finally:
         if conn:
             conn.close()
+
+async def _update_worker_bulk_progress_display(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Update the bulk add progress display with current counts"""
+    current_count = context.user_data.get("worker_bulk_items_added_count", 0)
+    failed_items = context.user_data.get("worker_bulk_items_failed", [])
+    product_type = context.user_data.get("worker_selected_category", "Products")
+    city_name = context.user_data.get("worker_bulk_city", "Unknown")
+    district_name = context.user_data.get("worker_bulk_district", "Unknown")
+    
+    type_emoji = PRODUCT_TYPES.get(product_type, DEFAULT_PRODUCT_EMOJI)
+    
+    # Create updated message
+    msg = f"📦 **Bulk Add {type_emoji} {product_type}** (Max 10)\n"
+    msg += f"📍 **{city_name} / {district_name}**\n\n"
+    msg += f"🔄 **Now forward your product messages:**\n\n"
+    msg += f"📝 Each message should have:\n"
+    msg += f"• **Media** (photo/video/GIF)\n"
+    msg += f"• **Caption** with product details\n\n"
+    msg += f"💡 Forward up to 10 messages, then click finish.\n"
+    msg += f"📊 **Progress:** {current_count}/10 added"
+    
+    if failed_items:
+        msg += f" ({len(failed_items)} failed)"
+    
+    # Update keyboard with current progress
+    finish_text = f"✅ Finish Bulk Add ({current_count}/10)"
+    if current_count >= 10:
+        finish_text = "✅ Complete! (10/10)"
+    elif current_count == 0:
+        finish_text = "❌ Cancel (0/10)"
+    
+    keyboard = [
+        [InlineKeyboardButton(finish_text, callback_data="worker_bulk_finish")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="worker_admin_menu")]
+    ]
+    
+    # Try to update the original message
+    try:
+        if update.message and update.message.chat_id:
+            # Get the bulk setup message chat_id from context if available  
+            setup_message_id = context.user_data.get("worker_bulk_setup_message_id")
+            setup_chat_id = context.user_data.get("worker_bulk_setup_chat_id")
+            
+            if setup_message_id and setup_chat_id:
+                await context.bot.edit_message_text(
+                    chat_id=setup_chat_id,
+                    message_id=setup_message_id,
+                    text=msg,
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode='Markdown'
+                )
+            else:
+                # Fallback: send a new message
+                await send_message_with_retry(context.bot, update.message.chat_id, 
+                                            f"📊 **Progress Update:** {current_count}/10 added" + 
+                                            (f" ({len(failed_items)} failed)" if failed_items else ""), 
+                                            parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Error updating bulk progress display: {e}")
+
+async def handle_worker_bulk_forwarded_drops(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Process forwarded messages from workers for bulk product addition"""
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    
+    # Verify worker permissions
+    user_roles = get_user_roles(user_id)
+    if not user_roles['is_worker']:
+        return
+    
+    # Check if in correct state
+    if context.user_data.get("state") != "awaiting_worker_bulk_forwarded_drops":
+        return
+    
+    if not update.message:
+        return
+
+    # Get bulk setup details
+    product_type = context.user_data.get("worker_selected_category")
+    city_name = context.user_data.get("worker_bulk_city")
+    district_name = context.user_data.get("worker_bulk_district")
+    
+    if not all([product_type, city_name, district_name]):
+        await send_message_with_retry(context.bot, chat_id, "❌ Error: Bulk setup details lost. Please start again.", parse_mode=None)
+        await _finish_worker_bulk_session(update, context, "Bulk session aborted due to missing setup data.")
+        return
+
+    current_count = context.user_data.get("worker_bulk_items_added_count", 0)
+    if current_count >= 10:  # Worker limit
+        logger.info(f"Worker bulk add limit already reached, but another message received.")
+        await _finish_worker_bulk_session(update, context, "Worker bulk add limit of 10 reached.")
+        return
+
+    # Extract media and caption
+    original_text = (update.message.caption or "").strip()
+    media_info_list = []
+    
+    if update.message.photo:
+        media_info_list.append({'type': 'photo', 'file_id': update.message.photo[-1].file_id})
+    elif update.message.video:
+        media_info_list.append({'type': 'video', 'file_id': update.message.video.file_id})
+    elif update.message.animation:
+        media_info_list.append({'type': 'gif', 'file_id': update.message.animation.file_id})
+    
+    if not media_info_list:
+        await send_message_with_retry(context.bot, chat_id, "⚠️ **Message skipped:** No media found. Please forward messages with photos/videos.", parse_mode='Markdown')
+        return
+    
+    if not original_text:
+        await send_message_with_retry(context.bot, chat_id, "⚠️ **Message skipped:** No caption found. Caption is needed for product details.", parse_mode='Markdown')
+        return
+
+    # Try to add the product to database
+    add_success = await _add_single_worker_bulk_item_to_db(context, product_type, city_name, district_name, media_info_list, original_text, user_id)
+
+    if add_success:
+        context.user_data['worker_bulk_items_added_count'] += 1
+        count_now = context.user_data['worker_bulk_items_added_count']
+        
+        type_emoji = PRODUCT_TYPES.get(product_type, DEFAULT_PRODUCT_EMOJI)
+        success_msg = f"✅ **Drop #{count_now} saved successfully!**\n\n"
+        success_msg += f"📦 {type_emoji} {product_type}\n"
+        success_msg += f"📝 {original_text[:50]}{'...' if len(original_text) > 50 else ''}\n"
+        success_msg += f"📊 **Progress:** {count_now}/10"
+        
+        if count_now < 10:
+            success_msg += f"\n\n💡 Forward next message or finish bulk adding."
+        else:
+            success_msg += f"\n\n🎉 **Maximum reached!** Finishing bulk add..."
+        
+        await send_message_with_retry(context.bot, chat_id, success_msg, parse_mode='Markdown')
+        
+        # Update progress display
+        await _update_worker_bulk_progress_display(update, context)
+        
+        if count_now >= 10:
+            await _finish_worker_bulk_session(update, context, "Worker bulk add limit of 10 reached.")
+    else:
+        # Track failed item
+        failed_items = context.user_data.get("worker_bulk_items_failed", [])
+        failed_items.append({
+            "caption": original_text[:30] + "..." if len(original_text) > 30 else original_text,
+            "reason": "Database error"
+        })
+        context.user_data["worker_bulk_items_failed"] = failed_items
+        
+        await send_message_with_retry(context.bot, chat_id, 
+                                    f"❌ **Drop failed to save!**\n\n"
+                                    f"📝 {original_text[:50]}{'...' if len(original_text) > 50 else ''}\n"
+                                    f"🔧 **Reason:** Database error\n\n"
+                                    f"💡 Try forwarding again or finish bulk adding.", 
+                                    parse_mode='Markdown')
+        
+        # Update progress display to show failed count
+        await _update_worker_bulk_progress_display(update, context)
+
+async def _add_single_worker_bulk_item_to_db(context: ContextTypes.DEFAULT_TYPE, product_type: str, city_name: str, district_name: str, media_info_list: list, original_text: str, worker_id: int) -> bool:
+    """Helper function to add a single worker bulk item to the database"""
+    import asyncio
+    import tempfile
+    import shutil
+    import os
+    import time
+    
+    current_bulk_session_item_index = context.user_data.get('worker_bulk_items_added_count', 0)
+    
+    temp_dir = None
+    conn = None
+    product_id = None
+    
+    try:
+        # Find or create city and district IDs
+        conn = get_db_connection()
+        c = conn.cursor()
+        
+        # Find or create city
+        c.execute("SELECT city_id FROM cities WHERE city_name = ?", (city_name,))
+        city_result = c.fetchone()
+        if not city_result:
+            c.execute("INSERT INTO cities (city_name) VALUES (?)", (city_name,))
+            city_id = c.lastrowid
+        else:
+            city_id = city_result[0]
+        
+        # Find or create district
+        c.execute("SELECT district_id FROM districts WHERE city_id = ? AND district_name = ?", (city_id, district_name))
+        district_result = c.fetchone()
+        if not district_result:
+            c.execute("INSERT INTO districts (city_id, district_name) VALUES (?, ?)", (city_id, district_name))
+            district_id = c.lastrowid
+        else:
+            district_id = district_result[0]
+        
+        # Create product with worker ID
+        c.execute("""
+            INSERT INTO products (city_id, district_id, product_type, size, price, available, added_by, original_text, added_date)
+            VALUES (?, ?, ?, ?, ?, 1, ?, ?, CURRENT_TIMESTAMP)
+        """, (city_id, district_id, product_type, "1g", 25.0, worker_id, original_text))  # Default values, caption as original_text
+        
+        product_id = c.lastrowid
+        
+        # Handle media if present
+        media_list_for_db = []
+        if media_info_list:
+            temp_dir_base = await asyncio.to_thread(tempfile.mkdtemp, prefix="worker_bulk_item_")
+            temp_dir = os.path.join(temp_dir_base, str(int(time.time()*1000)))
+            await asyncio.to_thread(os.makedirs, temp_dir, exist_ok=True)
+
+            for i, media_info_item in enumerate(media_info_list):
+                m_type = media_info_item['type']
+                file_id_tg = media_info_item['file_id']
+                file_extension = ".jpg" if m_type == "photo" else ".mp4" if m_type in ["video", "gif"] else ".dat"
+                temp_file_name = f"media_{i}_{file_id_tg}{file_extension}"
+                temp_file_path = os.path.join(temp_dir, temp_file_name)
+                
+                try:
+                    file_obj = await context.bot.get_file(file_id_tg)
+                    await file_obj.download_to_drive(custom_path=temp_file_path)
+                    if await asyncio.to_thread(os.path.exists, temp_file_path) and await asyncio.to_thread(os.path.getsize, temp_file_path) > 0:
+                        media_list_for_db.append({"type": m_type, "path": temp_file_path, "file_id": file_id_tg})
+                except Exception as e:
+                    logger.error(f"Error downloading worker bulk media ({file_id_tg}): {e}")
+                    pass
+
+        # Move media to final location and insert records
+        if product_id and media_list_for_db and temp_dir:
+            final_media_dir = os.path.join(MEDIA_DIR, str(product_id))
+            await asyncio.to_thread(os.makedirs, final_media_dir, exist_ok=True)
+            media_inserts = []
+            
+            for media_item_db in media_list_for_db:
+                temp_p = media_item_db["path"]
+                if await asyncio.to_thread(os.path.exists, temp_p):
+                    new_fname = os.path.basename(temp_p)
+                    final_p_path = os.path.join(final_media_dir, new_fname)
+                    try:
+                        await asyncio.to_thread(shutil.move, temp_p, final_p_path)
+                        media_inserts.append((product_id, media_item_db["type"], final_p_path, media_item_db["file_id"]))
+                    except OSError as move_err:
+                        logger.error(f"Error moving worker bulk media {temp_p}: {move_err}")
+            
+            if media_inserts:
+                c.executemany("INSERT INTO product_media (product_id, media_type, file_path, telegram_file_id) VALUES (?, ?, ?, ?)", media_inserts)
+        
+        # Log worker action
+        c.execute("""
+            INSERT INTO worker_actions (worker_id, action_type, product_id, details, quantity, timestamp)
+            VALUES (?, 'add_bulk_forwarded', ?, ?, 1, CURRENT_TIMESTAMP)
+        """, (worker_id, product_id, f"Added {product_type} via forwarded message in {city_name}/{district_name}"))
+        
+        conn.commit()
+        logger.info(f"Worker Bulk Added: Product {product_id} by worker {worker_id} via forwarded message.")
+        return True
+        
+    except Exception as e:
+        if conn and conn.in_transaction:
+            conn.rollback()
+        logger.error(f"Error adding worker bulk item to DB: {e}", exc_info=True)
+        return False
+    finally:
+        if conn:
+            conn.close()
+        if temp_dir and await asyncio.to_thread(os.path.exists, temp_dir):
+            await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)
+
+async def _finish_worker_bulk_session(update: Update, context: ContextTypes.DEFAULT_TYPE, message: str = "Worker bulk add session ended."):
+    """Cleans up worker bulk add context and shows summary"""
+    chat_id = None
+    if update.callback_query and update.callback_query.message:
+        chat_id = update.callback_query.message.chat_id
+    elif update.message:
+        chat_id = update.message.chat_id
+    
+    if not chat_id:
+        logger.error("_finish_worker_bulk_session: could not determine chat_id.")
+        return
+
+    success_count = context.user_data.get('worker_bulk_items_added_count', 0)
+    failed_items = context.user_data.get('worker_bulk_items_failed', [])
+    product_type = context.user_data.get('worker_selected_category', 'Products')
+    
+    # Create summary message
+    type_emoji = PRODUCT_TYPES.get(product_type, DEFAULT_PRODUCT_EMOJI)
+    final_message = f"📊 **Bulk Add Complete!**\n\n"
+    final_message += f"🎯 **{message}**\n\n"
+    final_message += f"✅ **Successfully added:** {success_count} {type_emoji} {product_type}\n"
+    
+    if failed_items:
+        final_message += f"❌ **Failed:** {len(failed_items)} items\n\n"
+        final_message += f"**Failed items:**\n"
+        for i, failed in enumerate(failed_items[:3], 1):  # Show first 3 failures
+            final_message += f"{i}. {failed['caption']} - {failed['reason']}\n"
+        if len(failed_items) > 3:
+            final_message += f"... and {len(failed_items) - 3} more\n"
+    else:
+        final_message += f"🎉 **All items processed successfully!**"
+    
+    # Clear worker bulk context
+    keys_to_pop = ['state', 'worker_selected_category', 'worker_bulk_city', 'worker_bulk_district', 
+                   'worker_bulk_city_id', 'worker_bulk_district_id', 'worker_bulk_items_added_count', 'worker_bulk_items_failed']
+    for key in keys_to_pop:
+        context.user_data.pop(key, None)
+    
+    await send_message_with_retry(context.bot, chat_id, final_message, parse_mode='Markdown')
+    
+    kb = [[InlineKeyboardButton("📦 Add More Products", callback_data="worker_select_category"),
+           InlineKeyboardButton("🏠 Worker Panel", callback_data="worker_admin_menu")]]
+    await send_message_with_retry(context.bot, chat_id, "What would you like to do next?", reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
 
 # --- END OF FILE worker_interface.py --- 

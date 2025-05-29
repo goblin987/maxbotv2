@@ -305,17 +305,15 @@ def callback_query_router(func):
                 
                 # Enhanced Worker Interface Callbacks (from worker_interface.py)
                 "worker_admin_menu": worker_interface.handle_worker_admin_menu,
-                "worker_select_category": worker_interface.handle_worker_select_category,  # NEW: Category selection
-                "worker_category_chosen": worker_interface.handle_worker_category_chosen,  # NEW: Single vs Bulk choice
-                "worker_add_single": worker_interface.handle_worker_add_single,  # NEW: Single product flow
-                "worker_add_bulk": worker_interface.handle_worker_add_bulk,  # NEW: Bulk product flow
-                "worker_single_city": worker_interface.handle_worker_single_city,  # NEW: Single product city
-                "worker_single_district": worker_interface.handle_worker_single_district,  # NEW: Single product district
-                "worker_bulk_city": worker_interface.handle_worker_bulk_city,  # NEW: Bulk product city
-                "worker_bulk_district": worker_interface.handle_worker_bulk_district,  # NEW: Bulk product district
-                "worker_bulk_finish": worker_interface.handle_worker_bulk_finish,  # NEW: Finish bulk adding
-                "worker_confirm_single_product": worker_interface.handle_worker_confirm_single_product,  # NEW: Confirm single product
-                "worker_confirm_bulk_products": worker_interface.handle_worker_confirm_bulk_products,  # NEW: Confirm bulk products
+                "worker_select_category": worker_interface.handle_worker_select_category,
+                "worker_select_type": worker_interface.handle_worker_select_type,
+                "worker_select_city": worker_interface.handle_worker_select_city,
+                "worker_select_district": worker_interface.handle_worker_select_district,
+                "worker_bulk_city": worker_interface.handle_worker_bulk_city,
+                "worker_bulk_district": worker_interface.handle_worker_bulk_district,
+                "worker_bulk_finish": worker_interface.handle_worker_bulk_finish,
+                "worker_confirm_single": worker_interface.handle_worker_confirm_single_product,
+                "worker_bulk_forwarded_drops": worker_interface.handle_worker_bulk_forwarded_drops,
                 
                 # Removed old worker handlers:
                 # "worker_city" - replaced with category selection
@@ -413,6 +411,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Worker Message Handling (simplified product adding)
         await handle_worker_single_product_message(update, context)
         await handle_worker_bulk_products_message(update, context)
+        await worker_interface.handle_worker_bulk_forwarded_drops(update, context)
         
         # Reseller Management Message Handling  
         await handle_reseller_manage_id_message(update, context)
