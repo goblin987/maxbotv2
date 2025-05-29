@@ -47,7 +47,7 @@ from utils import (
     DEFAULT_WELCOME_MESSAGE,
     get_user_status, get_progress_bar, # For welcome message preview
     _get_lang_data,
-    log_admin_action, ACTION_RESELLER_DISCOUNT_DELETE, ACTION_PRODUCT_TYPE_REASSIGN # For handle_confirm_yes
+    log_admin_action, ACTION_RESELLER_DISCOUNT_DELETE, ACTION_PRODUCT_TYPE_REASSIGN, ACTION_WORKER_ROLE_REMOVE # For handle_confirm_yes
 )
 
 # Logging setup
@@ -1874,6 +1874,35 @@ async def handle_confirm_yes(update: Update, context: ContextTypes.DEFAULT_TYPE,
             log_admin_action(admin_id=user_id, action="CLEAR_ALL_RESERVATIONS", reason=f"Cleared {products_cleared} reservations and {baskets_cleared} user baskets.")
             success_msg = f"✅ Cleared {products_cleared} product reservations and emptied {baskets_cleared} user baskets."
             next_callback = "admin_menu"
+        # <<< Worker Role Removal Logic >>>
+        elif action_type == "confirm_remove_worker_role":
+            if not action_params: raise ValueError("Missing worker_user_id")
+            worker_user_id = int(action_params[0])
+            offset = int(action_params[1]) if len(action_params) > 1 else 0
+            
+            # Get worker info for logging
+            c.execute("SELECT username, worker_status FROM users WHERE user_id = ?", (worker_user_id,))
+            worker_info = c.fetchone()
+            username = worker_info['username'] if worker_info and worker_info['username'] else f"ID_{worker_user_id}"
+            old_status = worker_info['worker_status'] if worker_info else None
+            
+            # Remove worker role
+            update_result = c.execute("UPDATE users SET is_worker = 0, worker_status = NULL WHERE user_id = ?", (worker_user_id,))
+            if update_result.rowcount > 0:
+                conn.commit()
+                log_admin_action(
+                    admin_id=user_id, 
+                    action=ACTION_WORKER_ROLE_REMOVE, 
+                    target_user_id=worker_user_id,
+                    reason=f"Worker role removed from @{username}",
+                    old_value=old_status
+                )
+                success_msg = f"✅ Worker role removed from @{username} (ID: {worker_user_id})."
+                next_callback = f"adm_view_workers_list|{offset}"
+            else:
+                conn.rollback()
+                success_msg = f"❌ Error: Could not remove worker role from user {worker_user_id}. They might not exist or not be a worker."
+                next_callback = "manage_workers_menu"
         else:
             logger.error(f"Unknown confirmation action type: {action_type}")
             conn.rollback(); success_msg = "❌ Unknown action confirmed."
