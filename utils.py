@@ -5,7 +5,6 @@ import logging
 import asyncio
 import httpx
 import json
-import aiofiles
 from collections import defaultdict, Counter
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
