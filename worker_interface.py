@@ -419,8 +419,39 @@ async def handle_worker_bulk_finish(update: Update, context: ContextTypes.DEFAUL
     if state != "awaiting_worker_bulk_forwarded_drops":
         return await query.answer("No active bulk session found.", show_alert=True)
     
-    await query.answer("Finishing bulk add session...")
-    await _finish_worker_bulk_session(update, context, "Worker manually finished bulk add session.")
+    bulk_products = context.user_data.get("worker_bulk_products", [])
+    if not bulk_products:
+        await query.answer("No products to add!", show_alert=True)
+        return await handle_worker_admin_menu(update, context)
+    
+    # Show confirmation screen
+    product_type = context.user_data.get("worker_selected_category", "Unknown")
+    city_name = context.user_data.get("worker_bulk_city", "Unknown")
+    district_name = context.user_data.get("worker_bulk_district", "Unknown")
+    
+    type_emoji = PRODUCT_TYPES.get(product_type, DEFAULT_PRODUCT_EMOJI)
+    
+    msg = f"📦 **Confirm Bulk Add**\n\n"
+    msg += f"• **Product Type:** {type_emoji} {product_type}\n"
+    msg += f"• **Location:** {city_name} / {district_name}\n"
+    msg += f"• **Total Products:** {len(bulk_products)}\n\n"
+    msg += f"**Products to add:**\n"
+    
+    for i, product in enumerate(bulk_products[:5], 1):  # Show first 5
+        msg += f"{i}. {product['size']} - {product['price']:.2f} EUR\n"
+    
+    if len(bulk_products) > 5:
+        msg += f"... and {len(bulk_products) - 5} more products\n"
+    
+    msg += f"\n✅ **Ready to add {len(bulk_products)} products to database!**"
+    
+    keyboard = [
+        [InlineKeyboardButton("✅ Confirm & Add All", callback_data="worker_confirm_bulk_products")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="worker_admin_menu")]
+    ]
+    
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    await query.answer("Review and confirm bulk products.")
 
 async def handle_worker_confirm_single_product(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Confirm and add single product to database"""
@@ -502,7 +533,7 @@ async def handle_worker_confirm_single_product(update: Update, context: ContextT
         await query.answer("Error adding product to database.", show_alert=True)
 
 async def handle_worker_confirm_bulk_products(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
-    """Confirm and add bulk products to database"""
+    """Handle confirmation of bulk product addition"""
     query = update.callback_query
     user_id = query.from_user.id
     
@@ -511,89 +542,91 @@ async def handle_worker_confirm_bulk_products(update: Update, context: ContextTy
     if not user_roles['is_worker']:
         return await query.answer("Access denied. Worker permissions required.", show_alert=True)
 
-    # Get product details from context
-    product_data = context.user_data.get("worker_bulk_products")
-    if not product_data:
-        await query.edit_message_text("❌ Product data lost. Please start again.")
-        return
-
+    bulk_products = context.user_data.get("worker_bulk_products", [])
+    if not bulk_products:
+        return await query.answer("No bulk products to confirm.", show_alert=True)
+    
+    await query.answer("Adding products to database...")
+    
+    # Get worker info for logging
+    conn = None
+    worker_alias = "Unknown"
     try:
         conn = get_db_connection()
         c = conn.cursor()
-        
-        # Find or create city
-        c.execute("SELECT id FROM cities WHERE name = ?", (product_data["city"],))
-        city_result = c.fetchone()
-        if not city_result:
-            c.execute("INSERT INTO cities (name) VALUES (?)", (product_data["city"],))
-            city_id = c.lastrowid
-        else:
-            city_id = city_result[0]
-        
-        # Find or create district
-        c.execute("SELECT id FROM districts WHERE city_id = ? AND name = ?", (city_id, product_data["district"]))
-        district_result = c.fetchone()
-        if not district_result:
-            c.execute("INSERT INTO districts (city_id, name) VALUES (?, ?)", (city_id, product_data["district"]))
-            district_id = c.lastrowid
-        else:
-            district_id = district_result[0]
-        
-        # Insert multiple products (up to 10 as per cap)
-        bulk_quantity = min(10, product_data.get("quantity", 5))  # Default 5, max 10
-        type_emoji = PRODUCT_TYPES.get(product_data["type"], DEFAULT_PRODUCT_EMOJI)
-        
-        product_ids = []
-        for i in range(bulk_quantity):
-            c.execute("""
-                INSERT INTO products (city, district, product_type, size, name, price, available, added_by, original_text, added_date)
-                VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, CURRENT_TIMESTAMP)
-            """, (product_data["city"], product_data["district"], product_data["type"], product_data["size"], "Worker Bulk Product", product_data["price"], user_id, product_data.get("original_text", f"{product_data['size']} {product_data['price']} EUR - Bulk #{i+1}")))
-            product_ids.append(c.lastrowid)
-        
-        # Log worker action - ensure schema compatibility first
-        c.execute("PRAGMA table_info(worker_actions)")
-        action_cols = [row[1] for row in c.fetchall()]
-        if "quantity" not in action_cols:
-            try:
-                c.execute("ALTER TABLE worker_actions ADD COLUMN quantity INTEGER DEFAULT 1")
-                logger.info("Added missing 'quantity' column to worker_actions (bulk confirm path)")
-            except sqlite3.OperationalError as alter_err:
-                if "duplicate column name" not in str(alter_err).lower():
-                    raise
-        
-        # Now safe to insert the log record
-        c.execute("""
-            INSERT INTO worker_actions (worker_id, action_type, details, quantity, timestamp)
-            VALUES (?, 'add_bulk', ?, ?, CURRENT_TIMESTAMP)
-        """, (user_id, f"Added {bulk_quantity}x {product_data['type']} - {product_data['size']} in {product_data['city']}/{product_data['district']}", bulk_quantity))
-        
-        conn.commit()
-        conn.close()
-        
-        # Success message
-        msg = f"✅ **Bulk Products Added Successfully!**\n\n"
-        msg += f"• **Product:** {type_emoji} {product_data['type']} - {product_data['size']}\n"
-        msg += f"• **Location:** {product_data['city']} / {product_data['district']}\n"
-        msg += f"• **Price:** {product_data['price']:.2f} EUR each\n"
-        msg += f"• **Quantity Added:** {bulk_quantity} units\n"
-        msg += f"• **Product IDs:** #{min(product_ids)}-#{max(product_ids)}\n\n"
-        msg += "🎉 **Excellent work!** All products are now available for customers."
-        
-        keyboard = [
-            [InlineKeyboardButton("➕ Add More Products", callback_data="worker_select_category")],
-            [InlineKeyboardButton("🏠 Main Menu", callback_data="worker_admin_menu")]
-        ]
-        
-        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-        
-        # Clear user data
-        context.user_data.pop("worker_bulk_products", None)
-        context.user_data.pop("state", None)
-        
+        c.execute("SELECT worker_alias FROM users WHERE user_id = ?", (user_id,))
+        result = c.fetchone()
+        if result and result['worker_alias']:
+            worker_alias = result['worker_alias']
     except Exception as e:
-        logger.error(f"Error confirming bulk products: {e}")
-        await query.answer("Error adding products to database.", show_alert=True)
+        logger.error(f"Error fetching worker alias: {e}")
+    finally:
+        if conn:
+            conn.close()
+    
+    success_count = 0
+    failed_count = 0
+    error_messages = []
+    
+    for i, product in enumerate(bulk_products, 1):
+        try:
+            success = await _simple_worker_product_insert(
+                user_id=user_id,
+                worker_alias=worker_alias,
+                city_name=product["city"],
+                district_name=product["district"], 
+                product_type=product["type"],
+                size=product["size"],
+                price=float(product["price"]),
+                quantity=1
+            )
+            
+            if success:
+                success_count += 1
+                logger.info(f"Worker {user_id} successfully added bulk product {i}: {product['type']} {product['size']} in {product['city']}/{product['district']}")
+            else:
+                failed_count += 1
+                error_messages.append(f"Product {i}: Database error")
+                logger.error(f"Failed to add bulk product {i} for worker {user_id}")
+                
+        except Exception as e:
+            failed_count += 1
+            error_messages.append(f"Product {i}: {str(e)}")
+            logger.error(f"Exception adding bulk product {i} for worker {user_id}: {e}")
+    
+    # Clear bulk session data
+    context.user_data.pop("worker_bulk_products", None)
+    context.user_data.pop("state", None)
+    context.user_data.pop("worker_bulk_city", None)
+    context.user_data.pop("worker_bulk_district", None)
+    context.user_data.pop("worker_selected_category", None)
+    
+    # Build result message
+    if success_count > 0:
+        msg = f"✅ **Bulk Add Complete!**\n\n"
+        msg += f"📊 **Results:**\n"
+        msg += f"• ✅ Successfully added: {success_count}\n"
+        if failed_count > 0:
+            msg += f"• ❌ Failed: {failed_count}\n\n"
+            msg += f"**Errors:**\n"
+            for error in error_messages[:5]:  # Show max 5 errors
+                msg += f"• {error}\n"
+            if len(error_messages) > 5:
+                msg += f"• ... and {len(error_messages) - 5} more errors\n"
+    else:
+        msg = f"❌ **Bulk Add Failed**\n\n"
+        msg += f"No products were successfully added.\n\n"
+        msg += f"**Errors:**\n"
+        for error in error_messages[:5]:
+            msg += f"• {error}\n"
+    
+    keyboard = [[InlineKeyboardButton("🏠 Back to Worker Menu", callback_data="worker_admin_menu")]]
+    
+    try:
+        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Error editing bulk confirm message: {e}")
+        await send_message_with_retry(context.bot, query.message.chat_id, msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
 # --- Helper Functions ---
 async def _get_worker_info(user_id: int) -> dict:

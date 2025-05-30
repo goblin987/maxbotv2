@@ -176,6 +176,7 @@ def callback_query_router(func):
                 "skip_discount_basket_pay": user.handle_skip_discount_basket_pay,
                 "apply_discount_single_pay": user.handle_apply_discount_single_pay,
                 "skip_discount_single_pay": user.handle_skip_discount_single_pay,
+                "single_item_discount_code_message": user.handle_single_item_discount_code_message,
 
                 # Payment Handlers (from payment.py)
                 "select_basket_crypto": payment.handle_select_basket_crypto,
@@ -285,24 +286,11 @@ def callback_query_router(func):
                 "adm_view_specific_worker": admin_workers.handle_adm_view_specific_worker,
                 "adm_worker_toggle_status": admin_workers.handle_adm_worker_toggle_status,
                 "adm_worker_remove_confirm": admin_workers.handle_adm_worker_remove_confirm,
+                "adm_remove_worker_menu": admin_workers.handle_adm_remove_worker_menu,
                 
                 # NEW: Enhanced Worker Management Callbacks
                 "adm_worker_analytics_menu": admin_workers.handle_adm_worker_analytics_menu,
                 "adm_worker_analytics_view": admin_workers.handle_adm_worker_analytics_view,
-                "adm_worker_leaderboard": admin_workers.handle_adm_worker_leaderboard,
-                "adm_worker_settings": admin_workers.handle_adm_worker_settings,
-                "adm_view_specific_worker_enhanced": admin_workers.handle_adm_view_specific_worker_enhanced,
-                
-                # NEW: Advanced Worker Management Features
-                "adm_worker_edit_alias": admin_workers.handle_adm_worker_edit_alias,
-                "adm_worker_edit_quota": admin_workers.handle_adm_worker_edit_quota,
-                "adm_export_performance_summary": admin_workers.handle_adm_export_performance_summary,
-                
-                # NEW: Worker Settings Handlers
-                "adm_set_default_quota": admin_workers.handle_adm_set_default_quota,
-                "adm_toggle_worker_notifications": admin_workers.handle_adm_toggle_worker_notifications,
-                "adm_bulk_worker_actions": admin_workers.handle_adm_bulk_worker_actions,
-                "adm_worker_templates": admin_workers.handle_adm_worker_templates,
                 
                 # Enhanced Worker Interface Callbacks (from worker_interface.py)
                 "worker_admin_menu": worker_interface.handle_worker_admin_menu,
@@ -316,36 +304,29 @@ def callback_query_router(func):
                 "worker_bulk_district": worker_interface.handle_worker_bulk_district,
                 "worker_bulk_finish": worker_interface.handle_worker_bulk_finish,
                 "worker_confirm_single_product": worker_interface.handle_worker_confirm_single_product,
+                "worker_confirm_bulk_products": worker_interface.handle_worker_confirm_bulk_products,
                 "worker_bulk_forwarded_drops": worker_interface.handle_worker_bulk_forwarded_drops,
                 
-                # Removed old worker handlers:
-                # "worker_city" - replaced with category selection
-                # "worker_district" - replaced with single/bulk flows
-                # "worker_type_selection" - replaced with category selection
-                # "worker_type" - replaced with category selection
-                # "worker_add_products" - replaced with single/bulk flows
-                # "worker_restock_product" - removed (no more restocking)
-                # "worker_confirm_restock" - removed (no more restocking)
-                # "worker_leaderboard" - removed (no more leaderboards)
-                # "worker_view_stats_enhanced" - removed (no more stats)
-                # "worker_view_stats" - removed (no more stats)
-                # "worker_revenue_breakdown" - removed (no more stats)
-                # "worker_goal_tracking" - removed (no more goals/quotas)
-                
-                # Additional backwards compatibility mappings
+                # Alternative names for worker handlers
                 "worker_menu": worker_interface.handle_worker_admin_menu,  # Alternative name
                 "worker_main": worker_interface.handle_worker_admin_menu,  # Alternative name
                 
                 # NEW: Bulk Stock Management Handlers (from admin_bulk_stock.py)
                 **BULK_STOCK_HANDLERS,
                 **COMPLETE_BULK_STOCK_HANDLERS,
-                "adm_remove_worker_menu": admin_workers.handle_adm_remove_worker_menu,
             }
             
             target_func = KNOWN_HANDLERS.get(command)
 
             if target_func and asyncio.iscoroutinefunction(target_func):
-                await target_func(update, context, params)
+                try:
+                    await target_func(update, context, params)
+                except Exception as handler_error:
+                    logger.error(f"Error in handler {command}: {handler_error}", exc_info=True)
+                    try: 
+                        await query.answer("An error occurred processing your request. Please try again.", show_alert=True)
+                    except Exception as answer_error:
+                        logger.error(f"Error answering callback query after handler error: {answer_error}")
             else:
                 logger.warning(f"No async handler function found or mapped for callback command: {command}")
                 try: await query.answer("Unknown action.", show_alert=True)
@@ -362,11 +343,87 @@ def callback_query_router(func):
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pass
 
+# --- State Validation Helper ---
+async def _validate_and_cleanup_state(update: Update, context: ContextTypes.DEFAULT_TYPE, state: str) -> bool:
+    """Validate state integrity and return True if valid, False if corrupted"""
+    user_id = update.effective_user.id
+    
+    # Define required context for each state
+    state_requirements = {
+        "awaiting_drop_details": ["admin_city", "admin_district", "admin_product_type", "pending_drop_size", "pending_drop_price"],
+        "awaiting_worker_single_product": ["worker_selected_category", "worker_single_city", "worker_single_district"],
+        "awaiting_worker_bulk_details": ["worker_selected_category", "worker_bulk_city", "worker_bulk_district"],
+        "awaiting_worker_bulk_forwarded_drops": ["worker_selected_category", "worker_bulk_city", "worker_bulk_district"],
+        "awaiting_welcome_template_edit": ["editing_welcome_template_name"],
+        "awaiting_welcome_confirmation": ["pending_welcome_template"],
+        "awaiting_balance_adjustment_amount": ["adjust_balance_target_user_id"],
+        "awaiting_balance_adjustment_reason": ["adjust_balance_target_user_id", "adjust_balance_amount"],
+        "awaiting_basket_discount_code": ["basket_pay_snapshot", "basket_pay_total_eur"],
+        "awaiting_single_item_discount_code": ["single_item_pay_snapshot", "single_item_pay_final_eur"],
+        "awaiting_review": [],  # No specific requirements
+        "awaiting_refill_amount": [],  # No specific requirements
+        "awaiting_user_discount_code": [],  # No specific requirements
+    }
+    
+    required_keys = state_requirements.get(state, [])
+    
+    # Check if all required context exists
+    for key in required_keys:
+        if key not in context.user_data:
+            logger.warning(f"State {state} missing required context key: {key} for user {user_id}")
+            return False
+    
+    # Additional validation for specific states
+    if state in ["awaiting_worker_single_product", "awaiting_worker_bulk_details", "awaiting_worker_bulk_forwarded_drops"]:
+        # Verify worker permissions
+        try:
+            user_roles = get_user_roles(user_id)
+            if not user_roles['is_worker']:
+                logger.warning(f"Non-worker user {user_id} in worker state {state}")
+                return False
+        except Exception as e:
+            logger.error(f"Error checking worker permissions for user {user_id}: {e}")
+            return False
+    
+    if state.startswith("awaiting_balance_adjustment"):
+        # Verify admin permissions
+        if user_id != ADMIN_ID:
+            logger.warning(f"Non-admin user {user_id} in admin balance adjustment state")
+            return False
+    
+    if state.startswith("awaiting_welcome"):
+        # Verify admin permissions
+        if user_id != ADMIN_ID:
+            logger.warning(f"Non-admin user {user_id} in welcome management state")
+            return False
+    
+    return True
+
 # --- Central Message Handler (for states) ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_id = update.effective_user.id
         text = update.message.text.strip() if update.message.text else ""
+        
+        # NEW: State validation and cleanup
+        current_state = context.user_data.get("state")
+        if current_state:
+            # Validate state integrity and clear corrupted states
+            if await _validate_and_cleanup_state(update, context, current_state):
+                logger.debug(f"State {current_state} validated for user {user_id}")
+            else:
+                logger.warning(f"Corrupted state {current_state} cleared for user {user_id}")
+                context.user_data.pop("state", None)
+                # Clear related state data
+                state_related_keys = [
+                    "admin_city", "admin_district", "admin_product_type", "pending_drop_size", "pending_drop_price",
+                    "worker_selected_category", "worker_single_city", "worker_bulk_city",
+                    "editing_welcome_template_name", "pending_welcome_template",
+                    "adjust_balance_target_user_id", "adjust_balance_amount",
+                    "basket_pay_snapshot", "single_item_pay_snapshot"
+                ]
+                for key in state_related_keys:
+                    context.user_data.pop(key, None)
         
         # Handle /commands
         if text.startswith('/admin'):
@@ -411,11 +468,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await admin_product_management.handle_adm_bulk_size_message(update, context)
             await admin_product_management.handle_adm_bulk_price_message(update, context)
             await admin_product_management.handle_adm_bulk_forwarded_drops(update, context)
+            # Admin Product Management message handlers
+            await admin_product_management.handle_adm_drop_details_message(update, context)
+            await admin_product_management.handle_adm_add_city_name_message(update, context)
+            await admin_product_management.handle_adm_edit_city_name_message(update, context)
+            await admin_product_management.handle_adm_add_district_name_message(update, context)
+            await admin_product_management.handle_adm_edit_district_message(update, context)
+            await admin_product_management.handle_adm_add_type_name_message(update, context)
+            await admin_product_management.handle_adm_add_type_emoji_message(update, context)
+            await admin_product_management.handle_adm_edit_type_emoji_message(update, context)
+            await admin_product_management.handle_adm_reassign_old_type_message(update, context)
+            await admin_product_management.handle_adm_reassign_new_type_message(update, context)
+            
+            # Admin Features message handlers
+            await admin_features.handle_adm_discount_code_message(update, context)
+            await admin_features.handle_adm_discount_percentage_message(update, context)
+            await admin_features.handle_adm_discount_fixed_message(update, context)
+            await admin_features.handle_adm_broadcast_message(update, context)
+            await admin_features.handle_adm_welcome_template_name_message(update, context)
+            await admin_features.handle_adm_welcome_template_text_message(update, context)
+            await admin_features.handle_adm_welcome_description_message(update, context)
+            await admin_features.handle_adm_welcome_description_edit_message(update, context)
         
         # Worker Message Handling (simplified product adding)
         await handle_worker_single_product_message(update, context)
-        await handle_worker_bulk_products_message(update, context)
-        await worker_interface.handle_worker_bulk_forwarded_drops(update, context)
+        await handle_worker_bulk_forwarded_drops_message(update, context)
         
         # Reseller Management Message Handling  
         await handle_reseller_manage_id_message(update, context)
@@ -953,7 +1030,7 @@ async def handle_worker_single_product_message(update: Update, context: ContextT
     
     await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
-async def handle_worker_bulk_products_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_worker_bulk_forwarded_drops_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle worker bulk products input"""
     user_id = update.effective_user.id
     

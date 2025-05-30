@@ -1,23 +1,20 @@
 import sqlite3
-import time
 import os
+import time  # Added for retry delays
 import logging
-import json
-import shutil
-import tempfile
 import asyncio
-from datetime import datetime, timedelta, timezone
+import httpx
+import json
+import aiofiles
+from collections import defaultdict, Counter
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 import requests
-from collections import Counter, defaultdict # Moved higher up
-
-# --- Telegram Imports ---
 from telegram import Update, Bot
 from telegram.constants import ParseMode
 import telegram.error as telegram_error
 from telegram.ext import ContextTypes
 from telegram import helpers
-# -------------------------
 
 # --- Logging Setup ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -1019,18 +1016,41 @@ CACHE_EXPIRY_SECONDS = 900
 # --- Database Connection Helper ---
 def get_db_connection():
     """Returns a connection to the SQLite database using the configured path."""
-    try:
-        db_dir = os.path.dirname(DATABASE_PATH)
-        if db_dir:
-            try: os.makedirs(db_dir, exist_ok=True)
-            except OSError as e: logger.warning(f"Could not create DB dir {db_dir}: {e}")
-        conn = sqlite3.connect(DATABASE_PATH, timeout=10)
-        conn.execute("PRAGMA foreign_keys = ON;")
-        conn.row_factory = sqlite3.Row
-        return conn
-    except sqlite3.Error as e:
-        logger.critical(f"CRITICAL ERROR connecting to database at {DATABASE_PATH}: {e}")
-        raise SystemExit(f"Failed to connect to database: {e}")
+    max_retries = 3
+    retry_delay = 0.1
+    
+    for attempt in range(max_retries):
+        try:
+            db_dir = os.path.dirname(DATABASE_PATH)
+            if db_dir:
+                try: os.makedirs(db_dir, exist_ok=True)
+                except OSError as e: logger.warning(f"Could not create DB dir {db_dir}: {e}")
+            
+            conn = sqlite3.connect(DATABASE_PATH, timeout=30)  # Increased timeout
+            conn.execute("PRAGMA foreign_keys = ON;")
+            conn.execute("PRAGMA journal_mode = WAL;")  # Better concurrency
+            conn.execute("PRAGMA synchronous = NORMAL;")  # Balanced performance/safety
+            conn.execute("PRAGMA cache_size = -2000;")  # 2MB cache
+            conn.row_factory = sqlite3.Row
+            
+            # Test the connection
+            conn.execute("SELECT 1").fetchone()
+            
+            return conn
+        except sqlite3.Error as e:
+            if attempt < max_retries - 1:
+                logger.warning(f"Database connection attempt {attempt + 1} failed: {e}. Retrying...")
+                time.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+            else:
+                logger.critical(f"CRITICAL ERROR connecting to database at {DATABASE_PATH}: {e}")
+                raise SystemExit(f"Failed to connect to database: {e}")
+        except Exception as e:
+            logger.critical(f"Unexpected error connecting to database: {e}")
+            raise SystemExit(f"Unexpected database error: {e}")
+    
+    # This should never be reached
+    raise SystemExit("Failed to establish database connection after retries")
 
 
 # --- Database Initialization ---
