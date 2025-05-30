@@ -339,6 +339,7 @@ def callback_query_router(func):
                 # NEW: Bulk Stock Management Handlers (from admin_bulk_stock.py)
                 **BULK_STOCK_HANDLERS,
                 **COMPLETE_BULK_STOCK_HANDLERS,
+                "adm_remove_worker_menu": admin_workers.handle_adm_remove_worker_menu,
             }
             
             target_func = KNOWN_HANDLERS.get(command)

@@ -74,6 +74,7 @@ async def handle_manage_workers_menu(update: Update, context: ContextTypes.DEFAU
     keyboard = [
         [InlineKeyboardButton("➕ Add Worker", callback_data="adm_add_worker_prompt_id")],
         [InlineKeyboardButton("👥 View Workers", callback_data="adm_view_workers_list|0")],
+        [InlineKeyboardButton("🗑️ Remove Worker", callback_data="adm_remove_worker_menu|0")],
         [InlineKeyboardButton("📊 Worker Analytics", callback_data="adm_worker_analytics_menu|0")],
         [InlineKeyboardButton("⬅️ Back to Admin Menu", callback_data="admin_menu")]
     ]
@@ -1408,6 +1409,66 @@ async def handle_adm_worker_analytics_view(update: Update, context: ContextTypes
     keyboard = [
         [InlineKeyboardButton("⬅️ Back", callback_data=f"adm_worker_analytics_menu|{back_offset}")]
     ]
+
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
+    await query.answer()
+
+# --- REMOVE WORKER MENU ---
+async def handle_adm_remove_worker_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
+    """Show list of workers to select one to remove role."""
+    query = update.callback_query
+    if query.from_user.id != ADMIN_ID:
+        return await query.answer("Access Denied.", show_alert=True)
+
+    offset = 0
+    if params and len(params) > 0 and params[0].isdigit():
+        offset = int(params[0])
+
+    conn = None
+    workers = []
+    total_workers = 0
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM users WHERE is_worker = 1")
+        total_workers = c.fetchone()[0]
+        c.execute("""
+            SELECT user_id, COALESCE(username,'') AS username, worker_alias
+            FROM users
+            WHERE is_worker = 1
+            ORDER BY user_id DESC
+            LIMIT ? OFFSET ?
+        """, (WORKERS_PER_PAGE, offset))
+        workers = c.fetchall()
+    except sqlite3.Error as e:
+        logger.error(f"Remove worker menu DB error: {e}")
+        await query.edit_message_text("❌ Database error loading workers.")
+        return
+    finally:
+        if conn:
+            conn.close()
+
+    msg = "🗑️ Select Worker to Remove\n\n"
+    keyboard = []
+    for w in workers:
+        uid = w['user_id']
+        uname = w['username'] or f"ID_{uid}"
+        alias = f" ({w['worker_alias']})" if w['worker_alias'] else ""
+        keyboard.append([
+            InlineKeyboardButton(f"@{uname}{alias}", callback_data=f"adm_worker_remove_confirm|{uid}|{offset}")
+        ])
+
+    total_pages = math.ceil(total_workers / WORKERS_PER_PAGE)
+    current_page = (offset // WORKERS_PER_PAGE) + 1
+    nav = []
+    if current_page > 1:
+        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"adm_remove_worker_menu|{max(0, offset-WORKERS_PER_PAGE)}"))
+    if current_page < total_pages:
+        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"adm_remove_worker_menu|{offset+WORKERS_PER_PAGE}"))
+    if nav:
+        keyboard.append(nav)
+
+    keyboard.append([InlineKeyboardButton("⬅️ Back", callback_data="manage_workers_menu")])
 
     await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
     await query.answer()
