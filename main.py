@@ -881,13 +881,20 @@ async def handle_worker_single_product_message(update: Update, context: ContextT
         await update.message.reply_text("❌ Access denied. Worker permissions required.")
         return
     
-    if not update.message or not update.message.text:
-        await update.message.reply_text("Please send the product details (size and price)")
-        return
-    
-    # Flexible parsing - accept any text format
-    input_text = update.message.text.strip()
-    
+    # Check for media-based input
+    incoming_caption = update.message.caption.strip() if update.message.caption else ""
+    if update.message.photo or update.message.video or update.message.animation:
+        # Require caption with size+price information
+        if not incoming_caption:
+            await update.message.reply_text("⚠️ Please add a caption containing size and price.")
+            return
+        input_text = incoming_caption
+    else:
+        if not update.message.text:
+            await update.message.reply_text("Please send the product details (size and price) as text or caption on a photo/video.")
+            return
+        input_text = update.message.text.strip()
+
     # Try to extract price (look for decimal numbers)
     price_matches = re.findall(r'\d+\.?\d*', input_text)
     
@@ -927,7 +934,8 @@ async def handle_worker_single_product_message(update: Update, context: ContextT
         "district": district_name,
         "type": product_type,
         "size": size_text,
-        "price": price_value
+        "price": price_value,
+        "original_text": input_text
     }
     
     type_emoji = PRODUCT_TYPES.get(product_type, DEFAULT_PRODUCT_EMOJI)
