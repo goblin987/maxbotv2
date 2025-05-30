@@ -730,8 +730,21 @@ async def handle_worker_bulk_forwarded_drops(update: Update, context: ContextTyp
         return
     
     if not original_text:
-        await send_message_with_retry(context.bot, chat_id, "⚠️ **Message skipped:** No caption found. Caption is needed for product details.", parse_mode='Markdown')
-        return
+        # If the message belongs to a media group/album, Telegram often sends the caption with only one
+        # of the grouped messages. Silently ignore the rest of the album items that arrive without
+        # captions so we avoid spamming the worker with warnings. Still notify if the message is a
+        # standalone (no media_group_id) to help the worker correct the mistake.
+        if update.message.media_group_id:
+            logger.debug("Bulk add: album item without caption skipped silently (media_group_id=%s)", update.message.media_group_id)
+            return
+        else:
+            await send_message_with_retry(
+                context.bot,
+                chat_id,
+                "⚠️ **Message skipped:** No caption found. Caption is needed for product details.",
+                parse_mode='Markdown'
+            )
+            return
 
     # Try to add the product to database
     add_success = await _add_single_worker_bulk_item_to_db(context, product_type, city_name, district_name, media_info_list, original_text, user_id)
