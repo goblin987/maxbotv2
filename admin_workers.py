@@ -74,9 +74,7 @@ async def handle_manage_workers_menu(update: Update, context: ContextTypes.DEFAU
     keyboard = [
         [InlineKeyboardButton("➕ Add Worker", callback_data="adm_add_worker_prompt_id")],
         [InlineKeyboardButton("👥 View Workers", callback_data="adm_view_workers_list|0")],
-        [InlineKeyboardButton("📊 Worker Analytics", callback_data="adm_worker_analytics")],
-        [InlineKeyboardButton("🏆 Leaderboard", callback_data="adm_worker_leaderboard")],
-        [InlineKeyboardButton("⚙️ Worker Settings", callback_data="adm_worker_settings")],
+        [InlineKeyboardButton("📊 Worker Analytics", callback_data="adm_worker_analytics_menu|0")],
         [InlineKeyboardButton("⬅️ Back to Admin Menu", callback_data="admin_menu")]
     ]
     await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
@@ -1281,5 +1279,137 @@ async def handle_adm_worker_templates(update: Update, context: ContextTypes.DEFA
     ]
     
     await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+# --- SIMPLE ANALYTICS MENU ---
+async def handle_adm_worker_analytics_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
+    """Display paginated list of workers so admin can choose one to view analytics."""
+    query = update.callback_query
+    if query.from_user.id != ADMIN_ID:
+        return await query.answer("Access Denied.", show_alert=True)
+
+    offset = 0
+    if params and len(params) > 0 and params[0].isdigit():
+        offset = int(params[0])
+
+    conn = None
+    workers = []
+    total_workers = 0
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) as cnt FROM users WHERE is_worker = 1")
+        total_workers = c.fetchone()[0]
+        c.execute(
+            """
+            SELECT u.user_id, COALESCE(u.username, '') AS username, u.worker_alias,
+                   COUNT(p.id) AS total_drops
+            FROM users u
+            LEFT JOIN products p ON p.added_by = u.user_id
+            WHERE u.is_worker = 1
+            GROUP BY u.user_id, u.username, u.worker_alias
+            ORDER BY total_drops DESC
+            LIMIT ? OFFSET ?
+            """,
+            (WORKERS_PER_PAGE, offset),
+        )
+        workers = c.fetchall()
+    except sqlite3.Error as e:
+        logger.error(f"Analytics menu DB error: {e}")
+        await query.edit_message_text("❌ Database error fetching analytics list.")
+        return
+    finally:
+        if conn:
+            conn.close()
+
+    msg = "📊 Select Worker for Analytics\n\n"
+    keyboard = []
+    for w in workers:
+        uid = w[0]
+        uname = w[1] or f"ID_{uid}"
+        alias = f" ({w[2]})" if w[2] else ""
+        total = w[3]
+        keyboard.append([
+            InlineKeyboardButton(f"@{uname}{alias} - {total} drops", callback_data=f"adm_worker_analytics_view|{uid}|{offset}")
+        ])
+
+    total_pages = math.ceil(total_workers / WORKERS_PER_PAGE)
+    current_page = (offset // WORKERS_PER_PAGE) + 1
+    nav = []
+    if current_page > 1:
+        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"adm_worker_analytics_menu|{max(0, offset-WORKERS_PER_PAGE)}"))
+    if current_page < total_pages:
+        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"adm_worker_analytics_menu|{offset+WORKERS_PER_PAGE}"))
+    if nav:
+        keyboard.append(nav)
+
+    keyboard.append([InlineKeyboardButton("⬅️ Back", callback_data="manage_workers_menu")])
+
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
+    await query.answer()
+
+async def handle_adm_worker_analytics_view(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
+    """Show analytics for a specific worker."""
+    query = update.callback_query
+    if query.from_user.id != ADMIN_ID:
+        return await query.answer("Access Denied.", show_alert=True)
+
+    if not params or len(params) < 2 or not params[0].isdigit() or not params[1].isdigit():
+        return await query.answer("Error: Invalid data.", show_alert=True)
+
+    worker_id = int(params[0])
+    back_offset = int(params[1])
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        # Basic user info
+        c.execute("SELECT COALESCE(username,'') AS username, worker_alias FROM users WHERE user_id = ?", (worker_id,))
+        urow = c.fetchone()
+        if not urow:
+            await query.answer("Worker not found.", show_alert=True)
+            return await handle_adm_worker_analytics_menu(update, context, params=[str(back_offset)])
+        username = urow[0] or f"ID_{worker_id}"
+        alias = f" ({urow[1]})" if urow[1] else ""
+
+        # Total drops
+        c.execute("SELECT COUNT(*) FROM products WHERE added_by = ?", (worker_id,))
+        total_drops = c.fetchone()[0]
+
+        # Weekly drops (last 7 days)
+        c.execute("SELECT COUNT(*) FROM products WHERE added_by = ? AND DATE(added_date) >= DATE('now','-7 days')", (worker_id,))
+        weekly_drops = c.fetchone()[0]
+
+        # Monthly drops (current calendar month)
+        c.execute("SELECT COUNT(*) FROM products WHERE added_by = ? AND strftime('%Y-%m', added_date) = strftime('%Y-%m', 'now')", (worker_id,))
+        monthly_drops = c.fetchone()[0]
+
+        # By type overall
+        c.execute("SELECT product_type, COUNT(*) as cnt FROM products WHERE added_by = ? GROUP BY product_type ORDER BY cnt DESC", (worker_id,))
+        type_rows = c.fetchall()
+    except sqlite3.Error as e:
+        logger.error(f"Worker analytics view DB error: {e}")
+        await query.edit_message_text("❌ Database error fetching worker analytics.")
+        return
+    finally:
+        if conn:
+            conn.close()
+
+    msg = f"📊 Analytics for @{username}{alias}\n\n"
+    msg += f"• Total drops: {total_drops}\n"
+    msg += f"• Drops this week: {weekly_drops}\n"
+    msg += f"• Drops this month: {monthly_drops}\n\n"
+
+    if type_rows:
+        msg += "📦 By Product Type:\n"
+        for row in type_rows:
+            msg += f"• {row[0]}: {row[1]}\n"
+
+    keyboard = [
+        [InlineKeyboardButton("⬅️ Back", callback_data=f"adm_worker_analytics_menu|{back_offset}")]
+    ]
+
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
+    await query.answer()
 
 # --- END OF FILE admin_workers.py ---

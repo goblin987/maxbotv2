@@ -287,7 +287,8 @@ def callback_query_router(func):
                 "adm_worker_remove_confirm": admin_workers.handle_adm_worker_remove_confirm,
                 
                 # NEW: Enhanced Worker Management Callbacks
-                "adm_worker_analytics": admin_workers.handle_adm_worker_analytics,
+                "adm_worker_analytics_menu": admin_workers.handle_adm_worker_analytics_menu,
+                "adm_worker_analytics_view": admin_workers.handle_adm_worker_analytics_view,
                 "adm_worker_leaderboard": admin_workers.handle_adm_worker_leaderboard,
                 "adm_worker_settings": admin_workers.handle_adm_worker_settings,
                 "adm_view_specific_worker_enhanced": admin_workers.handle_adm_view_specific_worker_enhanced,
