@@ -8,6 +8,7 @@ import time
 import tempfile
 import shutil
 import asyncio
+import re
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 
@@ -550,7 +551,18 @@ async def handle_worker_confirm_bulk_products(update: Update, context: ContextTy
             """, (product_data["city"], product_data["district"], product_data["type"], product_data["size"], "Worker Bulk Product", product_data["price"], user_id, product_data.get("original_text", f"{product_data['size']} {product_data['price']} EUR - Bulk #{i+1}")))
             product_ids.append(c.lastrowid)
         
-        # Log worker action
+        # Log worker action - ensure schema compatibility first
+        c.execute("PRAGMA table_info(worker_actions)")
+        action_cols = [row[1] for row in c.fetchall()]
+        if "quantity" not in action_cols:
+            try:
+                c.execute("ALTER TABLE worker_actions ADD COLUMN quantity INTEGER DEFAULT 1")
+                logger.info("Added missing 'quantity' column to worker_actions (bulk confirm path)")
+            except sqlite3.OperationalError as alter_err:
+                if "duplicate column name" not in str(alter_err).lower():
+                    raise
+        
+        # Now safe to insert the log record
         c.execute("""
             INSERT INTO worker_actions (worker_id, action_type, details, quantity, timestamp)
             VALUES (?, 'add_bulk', ?, ?, CURRENT_TIMESTAMP)
@@ -796,6 +808,8 @@ async def _add_single_worker_bulk_item_to_db(context: ContextTypes.DEFAULT_TYPE,
     # Ensure the problematic table exists first
     await _ensure_scheduled_material_batches_exists()
     
+    logger.info(f"Attempting to add worker bulk product: type={product_type}, city={city_name}, district={district_name}, caption={original_text[:50]}")
+    
     # Use the simplified insert function instead
     success = await _simple_worker_product_insert(context, product_type, city_name, district_name, original_text, worker_id)
     
@@ -803,67 +817,139 @@ async def _add_single_worker_bulk_item_to_db(context: ContextTypes.DEFAULT_TYPE,
         logger.info(f"Worker bulk item added successfully using simplified function")
         return True
     else:
-        logger.error(f"Worker bulk item failed using simplified function")
+        logger.error(f"Worker bulk item failed using simplified function - caption: {original_text}")
         return False
 
 async def _simple_worker_product_insert(context: ContextTypes.DEFAULT_TYPE, product_type: str, city_name: str, district_name: str, original_text: str, worker_id: int) -> bool:
-    """Simplified function to insert worker product - bypassing any potential issues"""
+    """Simplified function to insert worker product - with proper data extraction"""
     conn = None
     
     try:
+        # Extract price from caption (look for numbers)
+        price_match = re.search(r'(\d+(?:\.\d+)?)', original_text)
+        price = float(price_match.group(1)) if price_match else 25.0
+        
+        # Extract size info (look for common patterns like "4g", "5g", etc.)
+        size_match = re.search(r'(\d+\s*g\b|\d+\s*gram|small|medium|large|\d+)', original_text.lower())
+        if size_match:
+            size_text = size_match.group(0).strip()
+            # Normalize size format
+            if 'g' in size_text or 'gram' in size_text:
+                size = size_text.replace('gram', 'g').replace(' ', '')
+            else:
+                size = size_text
+        else:
+            size = "1g"  # Default size
+        
+        logger.info(f"Extracted from '{original_text}': size='{size}', price={price}")
+        
         # Simple database connection and insert
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # DEBUG: Check for triggers on products table
-        cursor.execute("SELECT name, sql FROM sqlite_master WHERE type='trigger' AND tbl_name='products'")
-        triggers = cursor.fetchall()
-        if triggers:
-            logger.warning(f"Found triggers on products table: {triggers}")
-        
-        # DEBUG: Check if scheduled_material_batches exists
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='scheduled_material_batches'")
-        table_exists = cursor.fetchone()
-        logger.info(f"scheduled_material_batches table exists: {table_exists is not None}")
-        
-        # Direct insert without any complexity
-        insert_sql = "INSERT INTO products (city, district, product_type, size, name, price, available, added_by, original_text, added_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-        insert_params = (
-            city_name,           # city
-            district_name,       # district  
-            product_type,        # product_type
-            "1g",               # size
-            "Worker Product",    # name
-            25.0,               # price
-            1,                  # available
-            worker_id,          # added_by
-            original_text,      # original_text
-            "2025-05-29 20:00:00"  # added_date (hardcoded for testing)
-        )
-        
-        cursor.execute(insert_sql, insert_params)
-        product_id = cursor.lastrowid
-        
-        # Simple worker action log
-        action_sql = "INSERT INTO worker_actions (worker_id, action_type, product_id, details, quantity, timestamp) VALUES (?, ?, ?, ?, ?, ?)"
-        action_params = (
-            worker_id,
-            'add_bulk_forwarded',
-            product_id,
-            f"Added {product_type} in {city_name}/{district_name}",
-            1,
-            "2025-05-29 20:00:00"
-        )
-        
-        cursor.execute(action_sql, action_params)
+        # Ensure worker_actions table exists with the expected columns
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS worker_actions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                worker_id INTEGER NOT NULL,
+                action_type TEXT NOT NULL,
+                product_id INTEGER,
+                details TEXT,
+                quantity INTEGER DEFAULT 1,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # --- NEW: make sure legacy databases also have the `quantity` column ---
+        cursor.execute("PRAGMA table_info(worker_actions)")
+        existing_cols = [row[1] for row in cursor.fetchall()]
+        if "quantity" not in existing_cols:
+            try:
+                cursor.execute("ALTER TABLE worker_actions ADD COLUMN quantity INTEGER DEFAULT 1")
+                logger.info("Added missing 'quantity' column to worker_actions table")
+            except sqlite3.OperationalError as alter_err:
+                # If the column already exists (race-condition) ignore, else raise
+                if "duplicate column name" not in str(alter_err).lower():
+                    raise
+
+        # Use insert that always contains the quantity field (it now definitely exists)
+        # Try a minimal insert first to test
+        try:
+            # Insert with minimal required fields only
+            insert_sql = """
+                INSERT INTO products (city, district, product_type, size, name, price, available) 
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """
+            
+            insert_params = (
+                city_name,           # city
+                district_name,       # district  
+                product_type,        # product_type
+                size,                # extracted size
+                "Worker Product",    # simple name
+                price,               # extracted price
+                1,                   # available
+            )
+            
+            cursor.execute(insert_sql, insert_params)
+            product_id = cursor.lastrowid
+            
+            logger.info(f"Basic product insert successful: product_id={product_id}")
+            
+            # Now try to update with additional fields if they exist
+            try:
+                update_sql = "UPDATE products SET added_by = ?, original_text = ?, added_date = CURRENT_TIMESTAMP WHERE id = ?"
+                cursor.execute(update_sql, (worker_id, original_text, product_id))
+                logger.info(f"Updated product {product_id} with additional fields")
+            except Exception as update_error:
+                logger.warning(f"Could not update additional fields: {update_error}")
+                # Continue anyway - basic insert worked
+            
+        except sqlite3.Error as insert_error:
+            logger.error(f"Product insert failed: {insert_error}")
+            logger.error(f"SQL: {insert_sql}")
+            logger.error(f"Params: {insert_params}")
+            raise
+
+        if not product_id:
+            logger.error("Failed to get product_id after insert")
+            return False
+
+        logger.info(f"Product inserted with ID: {product_id}")
+
+        # Simple worker action log - also use CURRENT_TIMESTAMP in SQL
+        try:
+            action_sql = """
+                INSERT INTO worker_actions (worker_id, action_type, product_id, details, quantity, timestamp) 
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """
+            action_params = (
+                worker_id,
+                'add_bulk_forwarded',
+                product_id,
+                f"Added {product_type} - {size} @ {price}€ in {city_name}/{district_name}",
+                1,
+            )
+            
+            cursor.execute(action_sql, action_params)
+            logger.info(f"Worker action logged for product {product_id}")
+        except Exception as action_error:
+            logger.warning(f"Could not log worker action: {action_error}")
+            # Continue anyway - product was inserted
         
         # Commit and close
         conn.commit()
-        logger.info(f"Simple worker product insert successful: product_id={product_id}")
+        logger.info(f"Transaction committed successfully for product_id={product_id}")
         return True
         
+    except sqlite3.IntegrityError as e:
+        logger.error(f"Database integrity error: {e}")
+        if conn and conn.in_transaction:
+            conn.rollback()
+        return False
+        
     except Exception as error:
-        logger.error(f"Simple worker product insert failed: {error}", exc_info=True)
+        logger.error(f"Simple worker product insert failed with unexpected error: {error}", exc_info=True)
         if conn and conn.in_transaction:
             conn.rollback()
         return False
