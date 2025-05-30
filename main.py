@@ -470,6 +470,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await admin_product_management.handle_adm_bulk_forwarded_drops(update, context)
             # Admin Product Management message handlers
             await admin_product_management.handle_adm_drop_details_message(update, context)
+            await admin_product_management.handle_adm_custom_size_message(update, context)
+            await admin_product_management.handle_adm_price_message(update, context)
+            await admin_product_management.handle_adm_bot_media_message(update, context)
             await admin_product_management.handle_adm_add_city_message(update, context)
             await admin_product_management.handle_adm_edit_city_message(update, context)
             await admin_product_management.handle_adm_add_district_message(update, context)
@@ -484,6 +487,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await admin_features.handle_adm_discount_code_message(update, context)
             await admin_features.handle_adm_discount_value_message(update, context)
             await admin_features.handle_adm_broadcast_message(update, context)
+            await admin_features.handle_adm_broadcast_inactive_days_message(update, context)
             await admin_features.handle_adm_welcome_template_name_message(update, context)
             await admin_features.handle_adm_welcome_template_text_message(update, context)
             await admin_features.handle_adm_welcome_description_message(update, context)
